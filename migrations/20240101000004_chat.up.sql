@@ -1,0 +1,6 @@
+-- Create chat table
+CREATE TABLE IF NOT EXISTS chat (
+    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    dt INTEGER NOT NULL,
+    title TEXT
+);

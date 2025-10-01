@@ -1,0 +1,10 @@
+-- Create tool table
+CREATE TABLE IF NOT EXISTS tool (
+    id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    binary TEXT NOT NULL,
+    params TEXT NOT NULL,
+    disabled BOOLEAN NOT NULL DEFAULT 0,
+    deprecated BOOLEAN NOT NULL DEFAULT 0,
+    created_dt INTEGER NOT NULL
+);
