@@ -132,6 +132,7 @@ impl ProviderClient for OpenAIProvider {
     ) -> Result<GenerationResult>
     {
         let token = std::env::var(&self.provider.api_key_env_var).expect("API key env var not set! This should not happen");
+        info!("Running inference with endpoint {} and api key {}", &self.provider.base_url, &self.provider.api_key_env_var);
         let mut client = OpenAIClient::builder()
             .with_endpoint(&self.provider.base_url)
             .with_api_key(token)

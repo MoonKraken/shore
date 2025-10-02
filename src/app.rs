@@ -16,6 +16,7 @@ use futures::StreamExt;
 use ratatui::{
     Terminal,
     backend::{Backend, CrosstermBackend},
+    style::Style,
     widgets::{Block, Borders},
 };
 use std::collections::HashMap;
@@ -48,6 +49,13 @@ pub enum ModelSelectionMode {
     CurrentChatModels,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModelDialogMode {
+    Normal,
+    Search,
+    Visual,
+}
+
 #[derive(Debug)]
 pub enum InferenceEvent {
     InferenceComplete {
@@ -72,7 +80,7 @@ pub struct App {
     pub chat_history: Vec<Chat>,
     pub current_messages: HashMap<i64, Vec<ChatMessage>>, // model_id -> messages
     pub chat_history_index: usize,
-    pub chat_content_index: usize,
+    pub chat_content_index: Option<usize>,
     pub chat_history_collapsed: bool,
     pub textarea: TextArea<'static>,
     pub title_textarea: TextArea<'static>,
@@ -92,7 +100,9 @@ pub struct App {
     pub model_selection_index: usize,
     pub model_selection_states: HashMap<i64, bool>, // model_id -> selected
     pub model_search_query: String,
-    pub model_search_focused: bool,
+    pub model_dialog_mode: ModelDialogMode,
+    pub model_dialog_numeric_prefix: Option<usize>,
+    pub model_visual_start_index: Option<usize>, // Starting index for visual mode selection
     // Spinner animation state
     pub spinner_frame: usize,
     pub last_spinner_update: Instant,
@@ -141,6 +151,7 @@ impl App {
             let api_key_set = std::env::var(&provider_record.api_key_env_var).is_ok();
             if api_key_set {
                 // For now, all providers are OpenAI-compatible, but we can add other types later
+                info!("Creating OpenAI provider client for provider {:?}", provider_record);
                 let provider_client: Arc<dyn ProviderClient> =
                     Arc::new(OpenAIProvider::new(provider_record.clone()));
                 provider_clients.insert(provider_record.id, provider_client);
@@ -158,6 +169,7 @@ impl App {
         let all_models = database.get_all_models().await?;
         let mut available_models = HashMap::new();
         for model in all_models {
+            info!("Model {}: {}", model.id, model.model);
             available_models.insert(model.id, model);
         }
 
@@ -232,11 +244,13 @@ impl App {
             chat_history,
             current_messages: HashMap::new(),
             chat_history_index: 0,
-            chat_content_index: 0,
+            chat_content_index: None,
             chat_history_collapsed: false,
             textarea: {
                 let mut textarea = TextArea::default();
-                textarea.set_block(Block::default().borders(Borders::ALL).title("Prompt Input"));
+                textarea.set_block(Block::default().borders(Borders::ALL));
+                // Keep cursor visible with reversed style, but remove underline from cursor line
+                textarea.set_cursor_line_style(Style::default());
                 textarea
             },
             title_textarea: TextArea::default(),
@@ -255,7 +269,9 @@ impl App {
             model_selection_index: 0,
             model_selection_states: HashMap::new(),
             model_search_query: String::new(),
-            model_search_focused: true,
+            model_dialog_mode: ModelDialogMode::Normal,
+            model_dialog_numeric_prefix: None,
+            model_visual_start_index: None,
             spinner_frame: 0,
             last_spinner_update: Instant::now(),
             numeric_prefix: None,
@@ -463,7 +479,11 @@ impl App {
                     .get(&self.current_chat_profile.model_ids[self.current_model_idx])
                 {
                     let max_index = messages.len().saturating_sub(1);
-                    self.chat_content_index = (self.chat_content_index + count).min(max_index);
+                    if let Some(current_index) = self.chat_content_index {
+                        self.chat_content_index = Some((current_index + count).min(max_index));
+                    } else {
+                        self.chat_content_index = Some(0.min(max_index));
+                    }
                 }
                 self.numeric_prefix = None;
             }
@@ -471,7 +491,16 @@ impl App {
                 code: KeyCode::Char('['),
                 ..
             } => {
-                self.chat_content_index = self.chat_content_index.saturating_sub(count);
+                if let Some(current_index) = self.chat_content_index {
+                    self.chat_content_index = Some(current_index.saturating_sub(count));
+                } else if let Some(messages) = self
+                    .current_messages
+                    .get(&self.current_chat_profile.model_ids[self.current_model_idx])
+                {
+                    // If no selection, start from the end (last message)
+                    let max_index = messages.len().saturating_sub(1);
+                    self.chat_content_index = Some(max_index);
+                }
                 self.numeric_prefix = None;
             }
             // Model switching
@@ -519,11 +548,37 @@ impl App {
     }
 
     async fn handle_insert_mode_key(&mut self, key: KeyEvent) -> Result<()> {
-        match key.code {
-            KeyCode::Esc => {
+        match key {
+            KeyEvent {
+                code: KeyCode::Esc,
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
                 self.state = AppState::Normal;
             }
-            KeyCode::Enter => {
+            KeyEvent {
+                code: KeyCode::Char('m'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => {
+                self.open_model_selection_dialog(ModelSelectionMode::CurrentChatModels)
+                    .await?;
+                self.numeric_prefix = None;
+            }
+            KeyEvent {
+                code: KeyCode::Char('M'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => {
+                self.open_model_selection_dialog(ModelSelectionMode::DefaultModels)
+                    .await?;
+                self.numeric_prefix = None;
+            }
+            KeyEvent {
+                code: KeyCode::Enter,
+                modifiers: KeyModifiers::NONE,
+                ..
+            } => {
                 if !self.textarea.lines().join("").trim().is_empty() {
                     self.submit_message().await?;
                 }
@@ -541,28 +596,17 @@ impl App {
     }
 
     async fn handle_model_selection_key(&mut self, key: KeyEvent) -> Result<()> {
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') => {
-                self.state = AppState::Normal;
-            }
-            KeyCode::Tab => {
-                // Toggle focus between search box and model list
-                self.model_search_focused = !self.model_search_focused;
-            }
-            _ => {
-                if self.model_search_focused {
-                    self.handle_model_search_input(key).await?;
-                } else {
-                    self.handle_model_list_navigation(key).await?;
-                }
-            }
+        match self.model_dialog_mode {
+            ModelDialogMode::Search => self.handle_model_search_input(key).await?,
+            ModelDialogMode::Normal => self.handle_model_normal_mode(key).await?,
+            ModelDialogMode::Visual => self.handle_model_visual_mode(key).await?,
         }
         Ok(())
     }
 
     async fn handle_model_search_input(&mut self, key: KeyEvent) -> Result<()> {
         match key.code {
-            KeyCode::Char(c) => {
+            KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE => {
                 self.model_search_query.push(c);
                 self.model_selection_index = 0; // Reset selection to top when searching
             }
@@ -570,49 +614,137 @@ impl App {
                 self.model_search_query.pop();
                 self.model_selection_index = 0;
             }
-            KeyCode::Down | KeyCode::Enter => {
-                // Move focus to model list
-                self.model_search_focused = false;
+            KeyCode::Enter => {
+                // Exit search mode, go back to normal mode
+                self.model_dialog_mode = ModelDialogMode::Normal;
+            }
+            KeyCode::Esc => {
+                // Clear search string and go back to normal mode
+                self.model_search_query.clear();
+                self.model_selection_index = 0;
+                self.model_dialog_mode = ModelDialogMode::Normal;
             }
             _ => {}
         }
         Ok(())
     }
 
-    async fn handle_model_list_navigation(&mut self, key: KeyEvent) -> Result<()> {
+    async fn handle_model_normal_mode(&mut self, key: KeyEvent) -> Result<()> {
+        // Handle numeric prefix accumulation (only for keys without modifiers)
+        if key.modifiers == KeyModifiers::NONE {
+            if let KeyCode::Char(c) = key.code {
+                if c.is_ascii_digit() {
+                    let digit = c.to_digit(10).unwrap() as usize;
+                    self.model_dialog_numeric_prefix = Some(self.model_dialog_numeric_prefix.unwrap_or(0) * 10 + digit);
+                    return Ok(());
+                }
+            }
+        }
+
+        let count = self.model_dialog_numeric_prefix.unwrap_or(1);
         let filtered_models = self.get_filtered_models();
         let model_count = filtered_models.len();
 
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                if model_count > 0 {
-                    self.model_selection_index = (self.model_selection_index + 1) % model_count;
-                }
+            KeyCode::Esc => {
+                // Apply selection and close the dialog
+                self.apply_model_selection().await?;
+                self.state = AppState::Normal;
+                self.model_dialog_numeric_prefix = None;
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            KeyCode::Char('j') => {
                 if model_count > 0 {
-                    self.model_selection_index = if self.model_selection_index == 0 {
-                        model_count - 1
-                    } else {
-                        self.model_selection_index - 1
-                    };
+                    self.model_selection_index = (self.model_selection_index + count).min(model_count - 1);
                 }
+                self.model_dialog_numeric_prefix = None;
             }
-            KeyCode::Char(' ') => {
+            KeyCode::Char('k') => {
+                if model_count > 0 {
+                    self.model_selection_index = self.model_selection_index.saturating_sub(count);
+                }
+                self.model_dialog_numeric_prefix = None;
+            }
+            KeyCode::Char('l') | KeyCode::Char('h') | KeyCode::Char(' ') | KeyCode::Enter => {
                 // Toggle the selected model
                 if let Some((model_id, _)) = filtered_models.get(self.model_selection_index) {
                     let current_state = self.model_selection_states.get(model_id).unwrap_or(&false);
-                    self.model_selection_states
-                        .insert(**model_id, !current_state);
+                    self.model_selection_states.insert(**model_id, !current_state);
                 }
+                self.model_dialog_numeric_prefix = None;
             }
-            KeyCode::Enter => {
-                self.apply_model_selection().await?;
-                self.state = AppState::Normal;
+            KeyCode::Char('v') => {
+                // Enter visual mode
+                self.model_dialog_mode = ModelDialogMode::Visual;
+                self.model_visual_start_index = Some(self.model_selection_index);
+                self.model_dialog_numeric_prefix = None;
             }
             KeyCode::Char('/') => {
-                // Focus search box
-                self.model_search_focused = true;
+                // Enter search mode
+                self.model_dialog_mode = ModelDialogMode::Search;
+                self.model_dialog_numeric_prefix = None;
+            }
+            KeyCode::Char('x') | KeyCode::Char('q') => {
+                // Clear search string in normal mode
+                if !self.model_search_query.is_empty() {
+                    self.model_search_query.clear();
+                    self.model_selection_index = 0;
+                }
+                self.model_dialog_numeric_prefix = None;
+            }
+            _ => {
+                // Clear numeric prefix on any other key
+                self.model_dialog_numeric_prefix = None;
+            }
+        }
+        Ok(())
+    }
+
+    async fn handle_model_visual_mode(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Char('j') => {
+                let filtered_models = self.get_filtered_models();
+                let model_count = filtered_models.len();
+                if model_count > 0 {
+                    self.model_selection_index = (self.model_selection_index + 1).min(model_count - 1);
+                }
+            }
+            KeyCode::Char('k') => {
+                let filtered_models = self.get_filtered_models();
+                let model_count = filtered_models.len();
+                if model_count > 0 && self.model_selection_index > 0 {
+                    self.model_selection_index = self.model_selection_index.saturating_sub(1);
+                }
+            }
+            KeyCode::Char('l') | KeyCode::Char('h') | KeyCode::Char(' ') | KeyCode::Enter => {
+                // Toggle all models in the visual selection range
+                if let Some(start_idx) = self.model_visual_start_index {
+                    let filtered_models = self.get_filtered_models();
+                    let start = start_idx.min(self.model_selection_index);
+                    let end = start_idx.max(self.model_selection_index);
+                    
+                    // Collect model IDs to toggle
+                    let model_ids_to_toggle: Vec<i64> = (start..=end)
+                        .filter_map(|i| filtered_models.get(i).map(|(model_id, _)| **model_id))
+                        .collect();
+                    
+                    // Check if all selected models are currently enabled
+                    let all_enabled = model_ids_to_toggle.iter().all(|model_id| {
+                        *self.model_selection_states.get(model_id).unwrap_or(&false)
+                    });
+                    
+                    // If all are enabled, disable them all. Otherwise, enable them all.
+                    let new_state = !all_enabled;
+                    
+                    for model_id in model_ids_to_toggle {
+                        self.model_selection_states.insert(model_id, new_state);
+                    }
+                }
+                // Stay in visual mode - don't exit
+            }
+            KeyCode::Esc | KeyCode::Char('v') => {
+                // Exit visual mode
+                self.model_dialog_mode = ModelDialogMode::Normal;
+                self.model_visual_start_index = None;
             }
             _ => {}
         }
@@ -655,7 +787,7 @@ impl App {
         };
         self.current_chat = new_chat.clone(); // this will be created when the first message is submitted
         self.current_messages.clear();
-        self.chat_content_index = 0;
+        self.chat_content_index = None;
         self.state = AppState::InsertMode;
         self.current_chat_profile = self.default_profile.clone();
         self.current_model_idx = 0;
@@ -712,7 +844,7 @@ impl App {
                 self.current_chat_profile = self.default_profile.clone();
             }
 
-            self.chat_content_index = 0;
+            self.chat_content_index = None;
             self.current_model_idx = 0;
         }
         Ok(())
@@ -887,7 +1019,7 @@ impl App {
             }
         };
 
-        let provider_client = match self.provider_clients.get(&model_id) {
+        let provider_client = match self.provider_clients.get(&model.provider_id) {
             Some(client) => client.clone(),
             None => {
                 error!("Provider not found");
@@ -1025,7 +1157,9 @@ impl App {
         self.model_selection_index = 0;
         self.model_selection_states.clear();
         self.model_search_query.clear();
-        self.model_search_focused = true;
+        self.model_dialog_mode = ModelDialogMode::Normal;
+        self.model_dialog_numeric_prefix = None;
+        self.model_visual_start_index = None;
 
         // Initialize selection states based on current models
         let current_models = match mode {
@@ -1148,6 +1282,8 @@ impl App {
                 .borders(Borders::ALL)
                 .title("Edit Chat Title")
         );
+        // Remove underline from cursor line
+        title_textarea.set_cursor_line_style(Style::default());
         title_textarea.insert_str(current_title);
         self.title_textarea = title_textarea;
         self.state = AppState::TitleEdit;

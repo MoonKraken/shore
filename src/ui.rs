@@ -1,6 +1,7 @@
 use crate::{
-    app::{App, AppState, ModelSelectionMode},
+    app::{App, AppState, ModelSelectionMode, ModelDialogMode},
     model::chat::ChatRole,
+    markdown::parse_markdown,
 };
 use ratatui::{
     Frame,
@@ -9,6 +10,110 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table},
 };
+
+/// Wraps text to fit within a given width, preserving line breaks and styling
+fn wrap_text(text: Text, max_width: usize) -> Text<'static> {
+    if max_width == 0 {
+        // Convert to owned 'static version
+        let owned_lines: Vec<Line<'static>> = text.lines.into_iter().map(|line| {
+            let owned_spans: Vec<Span<'static>> = line.spans.into_iter().map(|span| {
+                Span::styled(span.content.to_string(), span.style)
+            }).collect();
+            Line::from(owned_spans)
+        }).collect();
+        return Text::from(owned_lines);
+    }
+
+    let mut wrapped_lines: Vec<Line<'static>> = Vec::new();
+    
+    for line in text.lines {
+        // Handle empty lines
+        if line.spans.is_empty() || (line.spans.len() == 1 && line.spans[0].content.is_empty()) {
+            wrapped_lines.push(Line::from(vec![Span::raw("")]));
+            continue;
+        }
+
+        // Collect all styled segments (word + style)
+        let mut segments: Vec<(String, Style)> = Vec::new();
+        
+        for span in &line.spans {
+            // Split the span content into words while preserving the style
+            let words: Vec<&str> = span.content.split_whitespace().collect();
+            for word in words {
+                segments.push((word.to_string(), span.style));
+            }
+        }
+
+        if segments.is_empty() {
+            wrapped_lines.push(Line::from(vec![Span::raw("")]));
+            continue;
+        }
+
+        // Wrap the segments into lines
+        let mut current_spans: Vec<Span<'static>> = Vec::new();
+        let mut current_width = 0;
+
+        for (word, style) in segments.iter() {
+            let word_width = word.chars().count();
+            
+            // If the word itself is longer than max_width, we need to break it
+            if word_width > max_width {
+                if !current_spans.is_empty() {
+                    wrapped_lines.push(Line::from(current_spans));
+                    current_spans = Vec::new();
+                    current_width = 0;
+                }
+                
+                // Break the long word into chunks
+                let chars: Vec<char> = word.chars().collect();
+                for chunk in chars.chunks(max_width) {
+                    let chunk_str: String = chunk.iter().collect();
+                    wrapped_lines.push(Line::from(vec![Span::styled(chunk_str, *style)]));
+                }
+                continue;
+            }
+            
+            // Check if adding this word would exceed the max width
+            let space_width = if current_width == 0 { 0 } else { 1 };
+            if current_width + space_width + word_width > max_width {
+                if !current_spans.is_empty() {
+                    wrapped_lines.push(Line::from(current_spans));
+                    current_spans = Vec::new();
+                    current_width = 0;
+                }
+            }
+            
+            // Add space before word if not at the start of a line
+            if current_width > 0 {
+                // Try to merge with previous span if same style
+                if let Some(last_span) = current_spans.last_mut() {
+                    if last_span.style == *style {
+                        let mut new_content = last_span.content.to_string();
+                        new_content.push(' ');
+                        new_content.push_str(word);
+                        *last_span = Span::styled(new_content, *style);
+                        current_width += 1 + word_width;
+                    } else {
+                        current_spans.push(Span::styled(format!(" {}", word), *style));
+                        current_width += 1 + word_width;
+                    }
+                } else {
+                    current_spans.push(Span::styled(word.clone(), *style));
+                    current_width += word_width;
+                }
+            } else {
+                current_spans.push(Span::styled(word.clone(), *style));
+                current_width += word_width;
+            }
+        }
+        
+        if !current_spans.is_empty() {
+            wrapped_lines.push(Line::from(current_spans));
+        }
+    }
+    
+    Text::from(wrapped_lines)
+}
 
 pub fn ui(f: &mut Frame, app: &mut App) {
     let size = f.area();
@@ -91,9 +196,8 @@ fn render_chat_history(f: &mut Frame, app: &App, area: Rect) {
         .collect();
 
     let list = List::new(items)
-        .block(Block::default().title("Chat History").borders(Borders::ALL))
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-        .highlight_symbol(">> ");
+        .block(Block::default().borders(Borders::ALL))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
     let mut state = ListState::default();
     state.select(Some(app.chat_history_index));
@@ -158,35 +262,64 @@ fn render_chat_content(f: &mut Frame, app: &App, area: Rect) {
     let messages = current_messages.unwrap();
     let mut items: Vec<ListItem> = Vec::new();
 
+    // Get the current model_id properly
+    let current_model_id = app.current_chat_profile
+        .model_ids
+        .get(app.current_model_idx)
+        .copied();
+
     for (i, message) in messages.iter().enumerate() {
-        let (color, content) = if let Some(error) = message.error.as_deref() {
-            (Color::Red, error)
+        let (color, content, alignment) = if let Some(error) = message.error.as_deref() {
+            (Color::Red, error, Alignment::Left)
         } else {
-            (Color::default(), message.content.as_deref().unwrap_or("[No content]"))
+            if message.chat_role == ChatRole::User {
+                (Color::Green, message.content.as_deref().unwrap_or("[No content]"), Alignment::Right)
+            } else {
+                (Color::default(), message.content.as_deref().unwrap_or("[No content]"), Alignment::Left)
+            }
         };
 
-        let style = if i == app.chat_content_index {
-            Style::default()
-                .fg(Color::Cyan)
-                // .bg(color)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(color)
-        };
+        let is_selected = app.chat_content_index.map_or(false, |idx| i == idx);
 
-        items.push(ListItem::new(Text::from(content)).style(style));
+        // Convert markdown to styled text
+        let text = parse_markdown(&content);
+        // Wrap text to fit the available width, preserving styling
+        let mut wrapped_text = wrap_text(text, (area.width as usize).saturating_sub(4));
+        // Add spacing after item
+        wrapped_text.lines.push(Line::from(""));
+        
+        // Apply alignment to each line
+        for line in &mut wrapped_text.lines {
+            line.alignment = Some(alignment);
+        }
+        
+        // Apply selection highlighting or error color
+        let list_item = if is_selected {
+            // For selected items, apply cyan color to entire text block
+            ListItem::new(wrapped_text).style(
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            )
+        } else {
+            // For error messages, apply red color to entire text block
+            ListItem::new(wrapped_text).style(Style::default().fg(color))
+        };
+        items.push(list_item);
 
         // Add loading indicator after user messages if they're currently being processed
         if message.chat_role == ChatRole::User {
-            if app.is_message_loading(app.current_model_idx as i64, message.id) {
-                let spinner_char = app.get_spinner_char();
-                let loading_text = format!("Assistant: {} Thinking...", spinner_char);
-                let loading_item = ListItem::new(Text::from(loading_text)).style(
-                    Style::default()
-                        .fg(Color::Gray)
-                        .add_modifier(Modifier::ITALIC),
-                );
-                items.push(loading_item);
+            if let Some(model_id) = current_model_id {
+                if app.is_message_loading(model_id, message.id) {
+                    let spinner_char = app.get_spinner_char();
+                    let loading_text = format!("Assistant: {} Thinking...", spinner_char);
+                    let loading_item = ListItem::new(Text::from(loading_text)).style(
+                        Style::default()
+                            .fg(Color::Gray)
+                            .add_modifier(Modifier::ITALIC),
+                    );
+                    items.push(loading_item);
+                }
             }
         }
     }
@@ -197,23 +330,17 @@ fn render_chat_content(f: &mut Frame, app: &App, area: Rect) {
                 // .title(title)
                 .borders(Borders::ALL),
         )
-        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
-        .highlight_symbol(">> ");
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
 
     let mut state = ListState::default();
-    state.select(Some(app.chat_content_index));
+    state.select(app.chat_content_index);
 
     f.render_stateful_widget(list, area, &mut state);
 }
 
 fn render_prompt_input(f: &mut Frame, app: &App, area: Rect) {
-    let title = match app.state {
-        AppState::InsertMode => "Prompt Input (INSERT)",
-        _ => "Prompt Input",
-    };
-
     let mut textarea = app.textarea.clone();
-    textarea.set_block(Block::default().title(title).borders(Borders::ALL));
+    textarea.set_block(Block::default().borders(Borders::ALL));
 
     f.render_widget(&textarea, area);
 }
@@ -327,41 +454,72 @@ fn render_model_selection_dialog(f: &mut Frame, app: &App, area: Rect) {
     let popup_area = centered_rect(80, 70, area);
     f.render_widget(Clear, popup_area);
 
-    let title = match app.model_selection_mode {
+    let base_title = match app.model_selection_mode {
         ModelSelectionMode::DefaultModels => "Select Default Models",
         ModelSelectionMode::CurrentChatModels => "Select Models for Current Chat",
     };
 
-    // Split popup area into search, table, and instructions
+    // Add mode indicator to title
+    let mode_indicator = match app.model_dialog_mode {
+        ModelDialogMode::Normal => "",
+        ModelDialogMode::Search => " [SEARCH]",
+        ModelDialogMode::Visual => " [VISUAL]",
+    };
+    let title = format!("{}{}", base_title, mode_indicator);
+
+    // Always show the search field
     let layout = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3), // For search box
+            Constraint::Length(3), // For search box/query display
             Constraint::Min(0),    // For the table
-            Constraint::Length(4), // For instructions
+            Constraint::Length(3), // For currently enabled models
         ])
         .split(popup_area);
 
     // Render search box
-    let search_style = if app.model_search_focused {
+    let search_text = if app.model_dialog_mode == ModelDialogMode::Search {
+        format!("Search: {}", app.model_search_query)
+    } else if !app.model_search_query.is_empty() {
+        format!("Filter: {}", app.model_search_query)
+    } else {
+        "Search: ".to_string()
+    };
+    
+    let search_style = if app.model_dialog_mode == ModelDialogMode::Search {
         Style::default().fg(Color::Yellow)
     } else {
         Style::default()
     };
 
-    let search_paragraph = Paragraph::new(format!("Search: {}", app.model_search_query))
+    let search_paragraph = Paragraph::new(search_text)
         .block(
             Block::default()
-                .title("Filter Models")
                 .borders(Borders::ALL)
                 .border_style(search_style),
         )
         .alignment(Alignment::Left);
 
     f.render_widget(search_paragraph, layout[0]);
+    
+    let table_idx = 1;
+    let enabled_models_idx = 2;
 
     // Get filtered models
     let filtered_models = app.get_filtered_models();
+
+    // Determine visual selection range if in visual mode
+    let visual_range = if app.model_dialog_mode == ModelDialogMode::Visual {
+        if let Some(start_idx) = app.model_visual_start_index {
+            let start = start_idx.min(app.model_selection_index);
+            let end = start_idx.max(app.model_selection_index);
+            Some((start, end))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
 
     // Create table rows
     let rows: Vec<Row> = filtered_models
@@ -369,7 +527,8 @@ fn render_model_selection_dialog(f: &mut Frame, app: &App, area: Rect) {
         .enumerate()
         .map(|(i, (model_id, model))| {
             let is_selected = app.model_selection_states.get(model_id).unwrap_or(&false);
-            let is_highlighted = i == app.model_selection_index && !app.model_search_focused;
+            let is_cursor_here = i == app.model_selection_index;
+            let is_in_visual_range = visual_range.map_or(false, |(start, end)| i >= start && i <= end);
 
             let checkbox = if *is_selected { "[✓]" } else { "[ ]" };
             let provider_name = app.get_provider_name(model.provider_id);
@@ -380,9 +539,15 @@ fn render_model_selection_dialog(f: &mut Frame, app: &App, area: Rect) {
                 Style::default()
             };
 
-            let row_style = if is_highlighted {
+            let row_style = if is_cursor_here {
+                // Cursor position always gets yellow + bold
                 Style::default()
                     .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
+            } else if is_in_visual_range {
+                // Visual range gets cyan background or different style
+                Style::default()
+                    .fg(Color::Cyan)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
@@ -411,12 +576,6 @@ fn render_model_selection_dialog(f: &mut Frame, app: &App, area: Rect) {
         )),
     ]);
 
-    let table_style = if app.model_search_focused {
-        Style::default()
-    } else {
-        Style::default().fg(Color::Yellow)
-    };
-
     let table = Table::new(
         rows,
         [
@@ -430,38 +589,44 @@ fn render_model_selection_dialog(f: &mut Frame, app: &App, area: Rect) {
         Block::default()
             .title(title)
             .borders(Borders::ALL)
-            .border_style(table_style),
+            .border_style(Style::default().fg(Color::Yellow)),
     )
     .column_spacing(1);
 
-    f.render_widget(table, layout[1]);
+    f.render_widget(table, layout[table_idx]);
 
-    // Create instruction text
-    let instructions = vec![
-        Line::from(vec![
-            Span::styled(
-                "Navigation: ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("Tab to switch focus, ↑/k ↓/j to move, "),
-            Span::styled("Space", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(" to toggle"),
-        ]),
-        Line::from(vec![
-            Span::styled("Actions: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw("/ to search, "),
-            Span::styled("Enter", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(" to confirm, "),
-            Span::styled("Esc/q", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(" to cancel"),
-        ]),
-    ];
+    // Render currently enabled models
+    let enabled_model_names: Vec<String> = app.model_selection_states
+        .iter()
+        .filter_map(|(model_id, &selected)| {
+            if selected {
+                app.available_models.get(model_id).map(|model| {
+                    let provider_name = app.get_provider_name(model.provider_id);
+                    format!("{} ({})", model.model, provider_name)
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
 
-    let instructions_paragraph = Paragraph::new(instructions)
-        .block(Block::default().borders(Borders::ALL))
-        .alignment(Alignment::Center);
+    let enabled_text = if enabled_model_names.is_empty() {
+        "No models selected".to_string()
+    } else {
+        enabled_model_names.join(", ")
+    };
 
-    f.render_widget(instructions_paragraph, layout[2]);
+    let enabled_paragraph = Paragraph::new(enabled_text)
+        .block(
+            Block::default()
+                .title("Currently Enabled Models")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Green)),
+        )
+        .alignment(Alignment::Left)
+        .style(Style::default().fg(Color::Green));
+
+    f.render_widget(enabled_paragraph, layout[enabled_models_idx]);
 }
 
 fn render_delete_confirmation_dialog(f: &mut Frame, app: &App, area: Rect) {

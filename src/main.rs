@@ -2,6 +2,7 @@ mod app;
 mod database;
 mod ui;
 mod handlers;
+mod markdown;
 pub mod model;
 pub mod provider;
 
