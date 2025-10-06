@@ -12,12 +12,11 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use edtui::EditorMode;
 use futures::StreamExt;
 use ratatui::{
     Terminal,
     backend::{Backend, CrosstermBackend},
-    style::Style,
-    widgets::{Block, Borders},
 };
 use std::collections::HashMap;
 use std::collections::HashSet;
@@ -29,12 +28,29 @@ use tokio::task::JoinHandle;
 use tracing::error;
 use tracing::info;
 use tracing::instrument;
-use tui_textarea::TextArea;
+use edtui::{EditorState, EditorEventHandler};
+
+// Helper function to get text from EditorState
+fn editor_state_to_string(state: &EditorState) -> String {
+    // Collect all characters and convert to string
+    let all_chars: String = state.lines.iter()
+        .filter_map(|(ch_opt, _)| ch_opt.copied())
+        .collect();
+    all_chars
+}
+
+// Helper function to set text in EditorState
+fn set_editor_state_text(state: &mut EditorState, text: String) {
+    *state = EditorState::default();
+    // Try to use From trait to convert string to Jagged
+    state.lines = text.into();
+    // Reset cursor to start
+    state.cursor = Default::default();
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppState {
     Normal,
-    InsertMode,
     SearchMode,
     ModelSelection,
     DatabaseSelection,
@@ -82,8 +98,9 @@ pub struct App {
     pub chat_history_index: usize,
     pub chat_content_index: Option<usize>,
     pub chat_history_collapsed: bool,
-    pub textarea: TextArea<'static>,
-    pub title_textarea: TextArea<'static>,
+    pub textarea: EditorState,
+    pub title_textarea: EditorState,
+    pub search_textarea: EditorState,
     pub search_query: String,
     pub should_quit: bool,
     pub user_event_tx: mpsc::UnboundedSender<InferenceEvent>,
@@ -233,7 +250,7 @@ impl App {
             AppState::Normal
         };
 
-        let chat_history = database.get_recent_chats(50).await?;
+        let chat_history = database.get_all_chats().await?;
         let mut app = Self {
             database: Arc::new(database),
             state,
@@ -246,14 +263,9 @@ impl App {
             chat_history_index: 0,
             chat_content_index: None,
             chat_history_collapsed: false,
-            textarea: {
-                let mut textarea = TextArea::default();
-                textarea.set_block(Block::default().borders(Borders::ALL));
-                // Keep cursor visible with reversed style, but remove underline from cursor line
-                textarea.set_cursor_line_style(Style::default());
-                textarea
-            },
-            title_textarea: TextArea::default(),
+            textarea: EditorState::default(),
+            title_textarea: EditorState::default(),
+            search_textarea: EditorState::default(),
             search_query: String::new(),
             should_quit: false,
             user_event_tx,
@@ -362,7 +374,6 @@ impl App {
     async fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
         match self.state {
             AppState::Normal => self.handle_normal_mode_key(key).await?,
-            AppState::InsertMode => self.handle_insert_mode_key(key).await?,
             AppState::SearchMode => self.handle_search_mode_key(key).await?,
             AppState::ModelSelection => self.handle_model_selection_key(key).await?,
             AppState::DatabaseSelection => self.handle_database_selection_key(key).await?,
@@ -375,6 +386,15 @@ impl App {
     }
 
     async fn handle_normal_mode_key(&mut self, key: KeyEvent) -> Result<()> {
+        // if the prompt editor is in insert mode, all events go to the prompt editor
+        // unless it is the enter key, which will submit the message
+        if self.textarea.mode == EditorMode::Insert && key.code != KeyCode::Enter {
+            self.numeric_prefix = None;
+            let mut event_handler = EditorEventHandler::default();
+            event_handler.on_key_event(key, &mut self.textarea);
+            return Ok(());
+        }
+
         // Handle numeric prefix accumulation (only for keys without modifiers)
         if key.modifiers == KeyModifiers::NONE {
             if let KeyCode::Char(c) = key.code {
@@ -404,14 +424,6 @@ impl App {
                 ..
             } => {
                 self.create_new_chat().await?;
-                self.numeric_prefix = None;
-            }
-            KeyEvent {
-                code: KeyCode::Char('i'),
-                modifiers: KeyModifiers::NONE,
-                ..
-            } => {
-                self.state = AppState::InsertMode;
                 self.numeric_prefix = None;
             }
             KeyEvent {
@@ -528,70 +540,124 @@ impl App {
                 self.numeric_prefix = None;
             }
             KeyEvent {
-                code: KeyCode::Char('x'),
+                code: KeyCode::Char('x') | KeyCode::Char('d'),
                 ..
             } => {
-                // Open delete confirmation dialog
-                // Only allow deleting if we have a valid chat and it's not the only chat
-                if self.current_chat.id != 0 && !self.chat_history.is_empty() {
-                    self.state = AppState::DeleteConfirmation;
+                // If search is active, clear it and keep the selected entry
+                if !self.search_query.is_empty() {
+                    self.clear_search_filter().await?;
+                } else {
+                    let text = editor_state_to_string(&self.textarea);
+                    if !text.trim().is_empty() {
+                        let mut event_handler = EditorEventHandler::default();
+                        event_handler.on_key_event(key, &mut self.textarea);
+                    } else if !self.chat_history.is_empty() {
+                        // Only allow deleting if we have a valid chat and it's not the only chat
+                        if self.current_chat.id == 0 {
+                            self.chat_history.remove(self.chat_history_index);
+                            self.load_selected_chat().await?;
+                        } else {
+                            // Open delete confirmation dialog if this chat is actually written in the db
+                            self.state = AppState::DeleteConfirmation;
+                        }
+                    }
                 }
                 self.numeric_prefix = None;
             }
-            _ => {
-                // Clear numeric prefix on any other key
-                self.numeric_prefix = None;
-            }
-        }
-
-        Ok(())
-    }
-
-    async fn handle_insert_mode_key(&mut self, key: KeyEvent) -> Result<()> {
-        match key {
             KeyEvent {
-                code: KeyCode::Esc,
+                code: KeyCode::Char('/'),
                 modifiers: KeyModifiers::NONE,
                 ..
             } => {
-                self.state = AppState::Normal;
-            }
-            KeyEvent {
-                code: KeyCode::Char('m'),
-                modifiers: KeyModifiers::CONTROL,
-                ..
-            } => {
-                self.open_model_selection_dialog(ModelSelectionMode::CurrentChatModels)
-                    .await?;
+                // Enter search mode
+                self.state = AppState::SearchMode;
+                // If there's an existing search query, populate the textarea with it
+                if !self.search_query.is_empty() {
+                    set_editor_state_text(&mut self.search_textarea, self.search_query.clone());
+                } else {
+                    self.search_textarea = EditorState::default();
+                }
+                self.search_textarea.mode = EditorMode::Insert;
                 self.numeric_prefix = None;
             }
             KeyEvent {
-                code: KeyCode::Char('M'),
-                modifiers: KeyModifiers::CONTROL,
+                code: KeyCode::Esc,
                 ..
             } => {
-                self.open_model_selection_dialog(ModelSelectionMode::DefaultModels)
-                    .await?;
-                self.numeric_prefix = None;
+                // TODO do we really want to allow the user to prompt while viewing search results?
+                if !self.search_query.is_empty() {
+                    self.numeric_prefix = None;
+                    self.clear_search_filter().await?;
+                } else {
+                    let mut event_handler = EditorEventHandler::default();
+                    event_handler.on_key_event(key, &mut self.textarea);
+                }
             }
             KeyEvent {
                 code: KeyCode::Enter,
                 modifiers: KeyModifiers::NONE,
                 ..
             } => {
-                if !self.textarea.lines().join("").trim().is_empty() {
+                let text = editor_state_to_string(&self.textarea);
+                if !text.trim().is_empty() {
                     self.submit_message().await?;
+                } else if !self.search_query.is_empty() {
+                    self.clear_search_filter().await?;
                 }
             }
             _ => {
-                self.textarea.input(key);
+                // Clear numeric prefix on any other key
+                self.numeric_prefix = None;
+                let mut event_handler = EditorEventHandler::default();
+                event_handler.on_key_event(key, &mut self.textarea);
             }
         }
 
         Ok(())
     }
 
-    async fn handle_search_mode_key(&mut self, _key: KeyEvent) -> Result<()> {
+    async fn handle_search_mode_key(&mut self, key: KeyEvent) -> Result<()> {
+        match key.code {
+            KeyCode::Esc => {
+                // Exit search mode and clear the search
+                self.state = AppState::Normal;
+                self.search_query.clear();
+                self.search_textarea = EditorState::default();
+                self.chat_history = self.database.get_all_chats().await?;
+                // Adjust index if needed
+                if self.chat_history_index >= self.chat_history.len() && !self.chat_history.is_empty() {
+                    self.chat_history_index = self.chat_history.len() - 1;
+                }
+            }
+            KeyCode::Enter => {
+                // Accept search and return to normal mode, keeping filtered results and search query visible
+                self.state = AppState::Normal;
+            }
+            _ => {
+                // Pass all other events to the search editor
+                let mut event_handler = EditorEventHandler::default();
+                event_handler.on_key_event(key, &mut self.search_textarea);
+                
+                // Update search query and perform search
+                let new_query = editor_state_to_string(&self.search_textarea);
+                self.search_query = new_query.clone();
+                
+                // Perform the search and update chat_history
+                if self.search_query.is_empty() {
+                    self.chat_history = self.database.get_all_chats().await?;
+                } else {
+                    self.chat_history = self.database.search_all(&self.search_query, 1000).await?;
+                }
+                
+                // Reset chat history index to the first result
+                self.chat_history_index = 0;
+                
+                // Load the first search result if available
+                if !self.chat_history.is_empty() {
+                    self.load_selected_chat().await?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -788,7 +854,7 @@ impl App {
         self.current_chat = new_chat.clone(); // this will be created when the first message is submitted
         self.current_messages.clear();
         self.chat_content_index = None;
-        self.state = AppState::InsertMode;
+        self.state = AppState::Normal;
         self.current_chat_profile = self.default_profile.clone();
         self.current_model_idx = 0;
         // this doesnt do a db insert, that wont happen until the first message is submitted
@@ -797,6 +863,7 @@ impl App {
             new_chat
         );
         self.chat_history_index = 0;
+        self.textarea.mode = EditorMode::Insert;
 
         Ok(())
     }
@@ -852,7 +919,7 @@ impl App {
 
     #[instrument(skip_all)]
     async fn submit_message(&mut self) -> Result<()> {
-        let content = self.textarea.lines().join("\n");
+        let content = editor_state_to_string(&self.textarea);
         if content.trim().is_empty() {
             return Ok(());
         }
@@ -914,7 +981,7 @@ impl App {
             .await;
         }
 
-        self.textarea = TextArea::default();
+        self.textarea = EditorState::default();
         self.state = AppState::Normal;
 
         Ok(())
@@ -1276,15 +1343,8 @@ impl App {
     fn open_title_edit_dialog(&mut self) {
         // Initialize the title textarea with the current title (or empty string for new title)
         let current_title = self.current_chat.title.clone().unwrap_or_default();
-        let mut title_textarea = TextArea::default();
-        title_textarea.set_block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title("Edit Chat Title")
-        );
-        // Remove underline from cursor line
-        title_textarea.set_cursor_line_style(Style::default());
-        title_textarea.insert_str(current_title);
+        let mut title_textarea = EditorState::default();
+        set_editor_state_text(&mut title_textarea, current_title);
         self.title_textarea = title_textarea;
         self.state = AppState::TitleEdit;
     }
@@ -1295,7 +1355,7 @@ impl App {
                 self.state = AppState::Normal;
             }
             KeyCode::Enter => {
-                let new_title = self.title_textarea.lines().join("\n").trim().to_string();
+                let new_title = editor_state_to_string(&self.title_textarea).trim().to_string();
                 if !new_title.is_empty() {
                     // Update the title in the database
                     self.database.update_chat_title(self.current_chat.id, &new_title).await?;
@@ -1311,9 +1371,36 @@ impl App {
                 self.state = AppState::Normal;
             }
             _ => {
-                self.title_textarea.input(key);
+                let mut event_handler = EditorEventHandler::default();
+                event_handler.on_key_event(key, &mut self.title_textarea);
             }
         }
+        Ok(())
+    }
+
+    async fn clear_search_filter(&mut self) -> Result<()> {
+        // Remember the currently selected chat ID
+        let selected_chat_id = self.chat_history.get(self.chat_history_index).map(|c| c.id);
+        
+        // Clear the search query and textarea
+        self.search_query.clear();
+        self.search_textarea = EditorState::default();
+        
+        // Reload all chats
+        self.chat_history = self.database.get_all_chats().await?;
+        
+        // Find and restore the selected chat
+        if let Some(chat_id) = selected_chat_id {
+            if let Some(pos) = self.chat_history.iter().position(|c| c.id == chat_id) {
+                self.chat_history_index = pos;
+            } else {
+                // If the selected chat wasn't found (shouldn't happen), default to first entry
+                self.chat_history_index = 0;
+            }
+        } else {
+            self.chat_history_index = 0;
+        }
+        
         Ok(())
     }
 }

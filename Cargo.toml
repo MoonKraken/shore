@@ -41,5 +41,5 @@ dirs = "6.0"
 copypasta = "0.10"
 
 # Text editing widget
-tui-textarea = "0.7"
+edtui = "0.9.6"
 futures = "0.3.31"

@@ -3,6 +3,7 @@ use crate::{
     model::chat::ChatRole,
     markdown::parse_markdown,
 };
+use edtui::{EditorView, EditorTheme};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -131,7 +132,30 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     };
 
     if !app.chat_history_collapsed {
-        render_chat_history(f, app, main_layout[0]);
+        // Split the chat history area to accommodate search input
+        // Show search area if we're in search mode OR if there's an active search query
+        let show_search = app.state == AppState::SearchMode || !app.search_query.is_empty();
+        let chat_history_layout = if show_search {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([
+                    Constraint::Length(3), // Search input
+                    Constraint::Min(0),    // Chat history
+                ])
+                .split(main_layout[0])
+        } else {
+            Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Percentage(100)])
+                .split(main_layout[0])
+        };
+
+        if show_search {
+            render_search_input(f, app, chat_history_layout[0]);
+            render_chat_history(f, app, chat_history_layout[1]);
+        } else {
+            render_chat_history(f, app, chat_history_layout[0]);
+        }
     }
 
     let content_area = if app.chat_history_collapsed {
@@ -152,10 +176,6 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     render_chat_title(f, app, content_layout[0]);
     render_chat_content(f, app, content_layout[1]);
     render_prompt_input(f, app, content_layout[2]);
-
-    if app.state == AppState::SearchMode {
-        render_search_modal(f, app, size);
-    }
 
     if app.state == AppState::ProviderDialog {
         render_provider_dialog(f, app, size);
@@ -180,9 +200,9 @@ fn render_chat_history(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, chat)| {
-            let title = chat.title.clone();
+            let title = chat.title.clone().unwrap_or_else(|| "New Chat".to_string());
 
-            let style = if i == app.chat_history_index {
+            let base_style = if i == app.chat_history_index {
                 Style::default()
                     .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD)
@@ -190,8 +210,14 @@ fn render_chat_history(f: &mut Frame, app: &App, area: Rect) {
                 Style::default()
             };
 
-            let title = title.unwrap_or_else(|| "New Chat".to_string());
-            ListItem::new(Line::from(Span::styled(title, style)))
+            // Highlight search terms if we're searching
+            let line = if !app.search_query.is_empty() {
+                highlight_text(&title, &app.search_query, base_style)
+            } else {
+                Line::from(Span::styled(title, base_style))
+            };
+
+            ListItem::new(line)
         })
         .collect();
 
@@ -203,6 +229,71 @@ fn render_chat_history(f: &mut Frame, app: &App, area: Rect) {
     state.select(Some(app.chat_history_index));
 
     f.render_stateful_widget(list, area, &mut state);
+}
+
+fn render_search_input(f: &mut Frame, app: &mut App, area: Rect) {
+    if app.state == AppState::SearchMode {
+        // In search mode, show the editable search input
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title("Search");
+        let inner_area = block.inner(area);
+        f.render_widget(block, area);
+        
+        let theme = EditorTheme {
+            status_line: None,
+            base: Style::default().bg(Color::Reset),
+            ..Default::default()
+        };
+        
+        let editor = EditorView::new(&mut app.search_textarea)
+            .theme(theme);
+
+        f.render_widget(editor, inner_area);
+    } else {
+        // Not in search mode, but showing search results - display the query as text
+        let paragraph = Paragraph::new(app.search_query.clone())
+            .block(Block::default().borders(Borders::ALL).title("Search"))
+            .style(Style::default().fg(Color::Yellow));
+        f.render_widget(paragraph, area);
+    }
+}
+
+/// Highlight occurrences of search query in text with yellow background
+fn highlight_text(text: &str, query: &str, base_style: Style) -> Line<'static> {
+    if query.is_empty() {
+        return Line::from(Span::styled(text.to_string(), base_style));
+    }
+
+    let query_lower = query.to_lowercase();
+    let text_lower = text.to_lowercase();
+    
+    let mut spans = Vec::new();
+    let mut last_end = 0;
+    
+    // Find all occurrences of the query (case-insensitive)
+    for (idx, _) in text_lower.match_indices(&query_lower) {
+        // Add the text before the match
+        if idx > last_end {
+            spans.push(Span::styled(text[last_end..idx].to_string(), base_style));
+        }
+        
+        // Add the matched text with yellow background
+        let match_end = idx + query.len();
+        spans.push(Span::styled(
+            text[idx..match_end].to_string(),
+            base_style.bg(Color::Yellow).fg(Color::Black),
+        ));
+        
+        last_end = match_end;
+    }
+    
+    // Add any remaining text
+    if last_end < text.len() {
+        spans.push(Span::styled(text[last_end..].to_string(), base_style));
+    }
+    
+    Line::from(spans)
 }
 
 fn render_chat_title(f: &mut Frame, app: &App, area: Rect) {
@@ -282,7 +373,13 @@ fn render_chat_content(f: &mut Frame, app: &App, area: Rect) {
         let is_selected = app.chat_content_index.map_or(false, |idx| i == idx);
 
         // Convert markdown to styled text
-        let text = parse_markdown(&content);
+        let mut text = parse_markdown(&content);
+        
+        // Apply search highlighting if we're searching
+        if !app.search_query.is_empty() {
+            text = highlight_text_in_parsed(&text, &app.search_query);
+        }
+        
         // Wrap text to fit the available width, preserving styling
         let mut wrapped_text = wrap_text(text, (area.width as usize).saturating_sub(4));
         // Add spacing after item
@@ -338,22 +435,81 @@ fn render_chat_content(f: &mut Frame, app: &App, area: Rect) {
     f.render_stateful_widget(list, area, &mut state);
 }
 
-fn render_prompt_input(f: &mut Frame, app: &App, area: Rect) {
-    let mut textarea = app.textarea.clone();
-    textarea.set_block(Block::default().borders(Borders::ALL));
+fn render_prompt_input(f: &mut Frame, app: &mut App, area: Rect) {
+    let block = Block::default().borders(Borders::ALL);
+    let inner_area = block.inner(area);
+    f.render_widget(block, area);
+    
+    let theme = EditorTheme {
+        status_line: None,
+        base: Style::default().bg(Color::Reset),
+        ..Default::default()
+    };
+    
+    let editor = EditorView::new(&mut app.textarea)
+        .theme(theme);
 
-    f.render_widget(&textarea, area);
+    f.render_widget(editor, inner_area);
 }
 
-fn render_search_modal(f: &mut Frame, app: &App, area: Rect) {
-    let popup_area = centered_rect(50, 20, area);
-    f.render_widget(Clear, popup_area);
+/// Apply search highlighting to already-parsed markdown text
+fn highlight_text_in_parsed<'a>(text: &Text<'a>, query: &str) -> Text<'a> {
+    if query.is_empty() {
+        return text.clone();
+    }
 
-    let paragraph = Paragraph::new(format!("Search: {}", app.search_query))
-        .block(Block::default().title("Search").borders(Borders::ALL))
-        .alignment(Alignment::Left);
+    let query_lower = query.to_lowercase();
+    let mut highlighted_lines = Vec::new();
 
-    f.render_widget(paragraph, popup_area);
+    for line in &text.lines {
+        let mut new_spans = Vec::new();
+        
+        for span in &line.spans {
+            let content_lower = span.content.to_lowercase();
+            
+            if content_lower.contains(&query_lower) {
+                // This span contains the search query, we need to split it
+                let mut last_end = 0;
+                let content_str = span.content.as_ref();
+                
+                for (idx, _) in content_lower.match_indices(&query_lower) {
+                    // Add text before match
+                    if idx > last_end {
+                        new_spans.push(Span::styled(
+                            content_str[last_end..idx].to_string(),
+                            span.style,
+                        ));
+                    }
+                    
+                    // Add matched text with yellow background
+                    let match_end = idx + query.len();
+                    new_spans.push(Span::styled(
+                        content_str[idx..match_end].to_string(),
+                        span.style.bg(Color::Yellow).fg(Color::Black),
+                    ));
+                    
+                    last_end = match_end;
+                }
+                
+                // Add remaining text
+                if last_end < content_str.len() {
+                    new_spans.push(Span::styled(
+                        content_str[last_end..].to_string(),
+                        span.style,
+                    ));
+                }
+            } else {
+                // No match in this span, keep it as is
+                new_spans.push(span.clone());
+            }
+        }
+        
+        let mut new_line = Line::from(new_spans);
+        new_line.alignment = line.alignment;
+        highlighted_lines.push(new_line);
+    }
+
+    Text::from(highlighted_lines)
 }
 
 fn render_provider_dialog(f: &mut Frame, app: &App, area: Rect) {
@@ -680,7 +836,7 @@ fn render_delete_confirmation_dialog(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(instructions_paragraph, layout[1]);
 }
 
-fn render_title_edit_dialog(f: &mut Frame, app: &App, area: Rect) {
+fn render_title_edit_dialog(f: &mut Frame, app: &mut App, area: Rect) {
     let popup_area = centered_rect(60, 30, area);
     f.render_widget(Clear, popup_area);
 
@@ -693,7 +849,21 @@ fn render_title_edit_dialog(f: &mut Frame, app: &App, area: Rect) {
         .split(popup_area);
 
     // Render the title input area
-    f.render_widget(&app.title_textarea, layout[0]);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("Edit Chat Title");
+    let inner_area = block.inner(layout[0]);
+    f.render_widget(block, layout[0]);
+    
+    let theme = EditorTheme {
+        status_line: None,
+        base: Style::default().bg(Color::Reset),
+        ..Default::default()
+    };
+    
+    let editor = EditorView::new(&mut app.title_textarea)
+        .theme(theme);
+    f.render_widget(editor, inner_area);
 
     // Instructions
     let instructions = vec![Line::from(vec![

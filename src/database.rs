@@ -49,6 +49,17 @@ impl Database {
 
         Ok(chats)
     }
+
+    #[instrument(level = "info", skip(self))]
+    pub async fn get_all_chats(&self) -> Result<Vec<Chat>> {
+        let chats = sqlx::query_as::<_, Chat>(
+            "SELECT id, dt, title FROM chat ORDER BY dt DESC"
+        )
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(chats)
+    }
     
 
     #[instrument(level = "info", skip(self))]
@@ -329,5 +340,97 @@ impl Database {
             .await?;
 
         Ok(())
+    }
+
+    /// Search chats by title using FTS
+    #[instrument(level = "info", skip(self))]
+    pub async fn search_chats(&self, query: &str, limit: i32) -> Result<Vec<Chat>> {
+        if query.trim().is_empty() {
+            return self.get_recent_chats(limit).await;
+        }
+
+        // Use FTS5 MATCH syntax for full text search
+        let search_query = format!("\"{}\"", query.replace("\"", "\"\""));
+        
+        let chats = sqlx::query_as::<_, Chat>(
+            r#"
+            SELECT c.id, c.dt, c.title
+            FROM chat c
+            JOIN chat_fts ON chat_fts.rowid = c.id
+            WHERE chat_fts MATCH ?
+            ORDER BY c.dt DESC
+            LIMIT ?
+            "#
+        )
+        .bind(&search_query)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(chats)
+    }
+
+    /// Search for chats that have messages matching the query
+    #[instrument(level = "info", skip(self))]
+    pub async fn search_chats_by_messages(&self, query: &str, limit: i32) -> Result<Vec<Chat>> {
+        if query.trim().is_empty() {
+            return self.get_recent_chats(limit).await;
+        }
+
+        // Use FTS5 MATCH syntax for full text search
+        let search_query = format!("\"{}\"", query.replace("\"", "\"\""));
+        
+        let chats = sqlx::query_as::<_, Chat>(
+            r#"
+            SELECT DISTINCT c.id, c.dt, c.title
+            FROM chat c
+            JOIN chat_message cm ON cm.chat_id = c.id
+            JOIN chat_message_fts ON chat_message_fts.rowid = cm.id
+            WHERE chat_message_fts MATCH ?
+            ORDER BY c.dt DESC
+            LIMIT ?
+            "#
+        )
+        .bind(&search_query)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(chats)
+    }
+
+    /// Combined search across both chat titles and messages
+    #[instrument(level = "info", skip(self))]
+    pub async fn search_all(&self, query: &str, limit: i32) -> Result<Vec<Chat>> {
+        if query.trim().is_empty() {
+            return self.get_recent_chats(limit).await;
+        }
+
+        // Use FTS5 MATCH syntax for full text search
+        let search_query = format!("\"{}\"", query.replace("\"", "\"\""));
+        
+        let chats = sqlx::query_as::<_, Chat>(
+            r#"
+            SELECT DISTINCT c.id, c.dt, c.title
+            FROM chat c
+            JOIN chat_fts ON chat_fts.rowid = c.id
+            WHERE chat_fts MATCH ?
+            UNION
+            SELECT DISTINCT c.id, c.dt, c.title
+            FROM chat c
+            JOIN chat_message cm ON cm.chat_id = c.id
+            JOIN chat_message_fts ON chat_message_fts.rowid = cm.id
+            WHERE chat_message_fts MATCH ?
+            ORDER BY dt DESC
+            LIMIT ?
+            "#
+        )
+        .bind(&search_query)
+        .bind(&search_query)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(chats)
     }
 }
