@@ -24,15 +24,10 @@ impl App {
     }
 
     pub async fn handle_copy_message(&mut self) -> Result<()> {
-        if let Some(messages) = self.get_current_messages() {
-            if let Some(index) = self.chat_content_index {
-                if let Some(message) = messages.get(index) {
-                    if let Some(_content) = &message.content {
-                        // TODO: Implement clipboard functionality
-                        // copypasta crate can be used here
-                    }
-                }
-            }
+        if let Some(_messages) = self.get_current_messages() {
+            // TODO: Implement clipboard functionality with page-based navigation
+            // Need to determine which message to copy based on page number and cursor position
+            // copypasta crate can be used here
         }
         Ok(())
     }

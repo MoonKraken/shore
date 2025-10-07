@@ -96,7 +96,8 @@ pub struct App {
     pub chat_history: Vec<Chat>,
     pub current_messages: HashMap<i64, Vec<ChatMessage>>, // model_id -> messages
     pub chat_history_index: usize,
-    pub chat_content_index: Option<usize>,
+    pub chat_page_nums: HashMap<i64, usize>, // model_id -> page number (0-indexed)
+    pub chat_item_selections: HashMap<i64, Option<i64>>, // model_id -> relative item index (0=none, positive=from start, negative=from end)
     pub chat_history_collapsed: bool,
     pub textarea: EditorState,
     pub title_textarea: EditorState,
@@ -261,7 +262,8 @@ impl App {
             chat_history,
             current_messages: HashMap::new(),
             chat_history_index: 0,
-            chat_content_index: None,
+            chat_page_nums: HashMap::new(),
+            chat_item_selections: HashMap::new(),
             chat_history_collapsed: false,
             textarea: EditorState::default(),
             title_textarea: EditorState::default(),
@@ -293,9 +295,9 @@ impl App {
         // initialize the current_chat field at least twice. But the alternative
         // is refactoring create_new_chat and load_selected_chat to not rely on self
         if let Some(_) = app.chat_history.first() {
-            app.create_new_chat().await?;
-        } else {
             app.load_selected_chat().await?;
+        } else {
+            app.create_new_chat().await?;
         }
 
         Ok((app, user_event_rx))
@@ -386,6 +388,39 @@ impl App {
     }
 
     async fn handle_normal_mode_key(&mut self, key: KeyEvent) -> Result<()> {
+        // need to check these first because they still need to work in insert mode
+        match key {
+            KeyEvent {
+                code: KeyCode::Char('M'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => {
+                self.open_model_selection_dialog(ModelSelectionMode::DefaultModels)
+                    .await?;
+                self.numeric_prefix = None;
+                return Ok(());
+            }
+            KeyEvent {
+                code: KeyCode::Char('m'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => {
+                self.open_model_selection_dialog(ModelSelectionMode::CurrentChatModels)
+                    .await?;
+                self.numeric_prefix = None;
+                return Ok(());
+            },
+            KeyEvent {
+                code: KeyCode::Char('p'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => {
+                self.state = AppState::ProviderDialog;
+                self.numeric_prefix = None;
+            }
+            _ => {}
+        }
+
         // if the prompt editor is in insert mode, all events go to the prompt editor
         // unless it is the enter key, which will submit the message
         if self.textarea.mode == EditorMode::Insert && key.code != KeyCode::Enter {
@@ -395,19 +430,59 @@ impl App {
             return Ok(());
         }
 
-        // Handle numeric prefix accumulation (only for keys without modifiers)
-        if key.modifiers == KeyModifiers::NONE {
-            if let KeyCode::Char(c) = key.code {
-                if c.is_ascii_digit() {
+        // Check if prompt input is empty
+        let text = editor_state_to_string(&self.textarea);
+        let is_prompt_empty = text.trim().is_empty();
+
+        // Get the count to use for navigation (default to 1 if no prefix)
+        let count = self.numeric_prefix.unwrap_or(1);
+
+        // When prompt is empty, numbers do other things
+        if is_prompt_empty && key.modifiers == KeyModifiers::NONE {
+            match key.code {
+                KeyCode::Char('h') => {
+                    // Decrement current_model_idx
+                    if self.current_model_idx > 0 {
+                        self.current_model_idx = self.current_model_idx.saturating_sub(1);
+                    }
+                    self.numeric_prefix = None;
+                    return Ok(());
+                }
+                KeyCode::Char('l') => {
+                    // Increment current_model_idx
+                    if !self.current_chat_profile.model_ids.is_empty() {
+                        let max_idx = self.current_chat_profile.model_ids.len() - 1;
+                        self.current_model_idx = (self.current_model_idx + 1).min(max_idx);
+                    }
+                    self.numeric_prefix = None;
+                    return Ok(());
+                }
+                KeyCode::Char('j') => {
+                    // Increment page (go down one page in chat content)
+                    if let Some(&model_id) = self.current_chat_profile.model_ids.get(self.current_model_idx) {
+                        let current_page = self.chat_page_nums.get(&model_id).copied().unwrap_or(0);
+                        self.chat_page_nums.insert(model_id, current_page + 1);
+                    }
+                    self.numeric_prefix = None;
+                    return Ok(());
+                }
+                KeyCode::Char('k') => {
+                    // Decrement page (go up one page in chat content)
+                    if let Some(&model_id) = self.current_chat_profile.model_ids.get(self.current_model_idx) {
+                        let current_page = self.chat_page_nums.get(&model_id).copied().unwrap_or(0);
+                        self.chat_page_nums.insert(model_id, current_page.saturating_sub(1));
+                    }
+                    self.numeric_prefix = None;
+                    return Ok(());
+                }
+                KeyCode::Char(c) if c.is_ascii_digit() => {
                     let digit = c.to_digit(10).unwrap() as usize;
                     self.numeric_prefix = Some(self.numeric_prefix.unwrap_or(0) * 10 + digit);
                     return Ok(());
                 }
+                _ => {}
             }
         }
-
-        // Get the count to use for navigation (default to 1 if no prefix)
-        let count = self.numeric_prefix.unwrap_or(1);
 
         match key {
             KeyEvent {
@@ -424,32 +499,6 @@ impl App {
                 ..
             } => {
                 self.create_new_chat().await?;
-                self.numeric_prefix = None;
-            }
-            KeyEvent {
-                code: KeyCode::Char('p'),
-                modifiers: KeyModifiers::CONTROL,
-                ..
-            } => {
-                self.state = AppState::ProviderDialog;
-                self.numeric_prefix = None;
-            }
-            KeyEvent {
-                code: KeyCode::Char('M'),
-                modifiers: KeyModifiers::CONTROL,
-                ..
-            } => {
-                self.open_model_selection_dialog(ModelSelectionMode::DefaultModels)
-                    .await?;
-                self.numeric_prefix = None;
-            }
-            KeyEvent {
-                code: KeyCode::Char('m'),
-                modifiers: KeyModifiers::CONTROL,
-                ..
-            } => {
-                self.open_model_selection_dialog(ModelSelectionMode::CurrentChatModels)
-                    .await?;
                 self.numeric_prefix = None;
             }
             KeyEvent {
@@ -481,21 +530,15 @@ impl App {
                 self.load_selected_chat().await?;
                 self.numeric_prefix = None;
             }
-            // Chat content navigation
+            // Chat content item selection
             KeyEvent {
                 code: KeyCode::Char(']'),
                 ..
             } => {
-                if let Some(messages) = self
-                    .current_messages
-                    .get(&self.current_chat_profile.model_ids[self.current_model_idx])
-                {
-                    let max_index = messages.len().saturating_sub(1);
-                    if let Some(current_index) = self.chat_content_index {
-                        self.chat_content_index = Some((current_index + count).min(max_index));
-                    } else {
-                        self.chat_content_index = Some(0.min(max_index));
-                    }
+                if let Some(&model_id) = self.current_chat_profile.model_ids.get(self.current_model_idx) {
+                    self.chat_item_selections.get_mut(&model_id).map(|x| {
+                        *x = Some(x.map(|x| x + 1).unwrap_or(0));
+                    });
                 }
                 self.numeric_prefix = None;
             }
@@ -503,15 +546,10 @@ impl App {
                 code: KeyCode::Char('['),
                 ..
             } => {
-                if let Some(current_index) = self.chat_content_index {
-                    self.chat_content_index = Some(current_index.saturating_sub(count));
-                } else if let Some(messages) = self
-                    .current_messages
-                    .get(&self.current_chat_profile.model_ids[self.current_model_idx])
-                {
-                    // If no selection, start from the end (last message)
-                    let max_index = messages.len().saturating_sub(1);
-                    self.chat_content_index = Some(max_index);
+                if let Some(&model_id) = self.current_chat_profile.model_ids.get(self.current_model_idx) {
+                    self.chat_item_selections.get_mut(&model_id).map(|x| {
+                        *x = Some(x.map(|x| x - 1).unwrap_or(-1));
+                    });
                 }
                 self.numeric_prefix = None;
             }
@@ -588,6 +626,8 @@ impl App {
                 if !self.search_query.is_empty() {
                     self.numeric_prefix = None;
                     self.clear_search_filter().await?;
+                } else if let Some(model_id) = self.chat_item_selections.get_mut(&self.current_chat_profile.model_ids[self.current_model_idx]) {
+                    *model_id = None;
                 } else {
                     let mut event_handler = EditorEventHandler::default();
                     event_handler.on_key_event(key, &mut self.textarea);
@@ -599,10 +639,10 @@ impl App {
                 ..
             } => {
                 let text = editor_state_to_string(&self.textarea);
-                if !text.trim().is_empty() {
-                    self.submit_message().await?;
-                } else if !self.search_query.is_empty() {
+                if !self.search_query.is_empty() {
                     self.clear_search_filter().await?;
+                } else if !text.trim().is_empty() {
+                    self.submit_message().await?;
                 }
             }
             _ => {
@@ -713,10 +753,16 @@ impl App {
 
         match key.code {
             KeyCode::Esc => {
-                // Apply selection and close the dialog
-                self.apply_model_selection().await?;
-                self.state = AppState::Normal;
-                self.model_dialog_numeric_prefix = None;
+                // this will also clear the search string if present
+                if !self.model_search_query.is_empty() {
+                    self.model_search_query.clear();
+                    self.model_selection_index = 0;
+                } else {
+                    // Apply selection and close the dialog
+                    self.apply_model_selection().await?;
+                    self.state = AppState::Normal;
+                    self.model_dialog_numeric_prefix = None;
+                }
             }
             KeyCode::Char('j') => {
                 if model_count > 0 {
@@ -749,7 +795,7 @@ impl App {
                 self.model_dialog_mode = ModelDialogMode::Search;
                 self.model_dialog_numeric_prefix = None;
             }
-            KeyCode::Char('x') | KeyCode::Char('q') => {
+            KeyCode::Char('x') | KeyCode::Char('q') | KeyCode::Char('c') | KeyCode::Char('d') => {
                 // Clear search string in normal mode
                 if !self.model_search_query.is_empty() {
                     self.model_search_query.clear();
@@ -853,10 +899,18 @@ impl App {
         };
         self.current_chat = new_chat.clone(); // this will be created when the first message is submitted
         self.current_messages.clear();
-        self.chat_content_index = None;
         self.state = AppState::Normal;
         self.current_chat_profile = self.default_profile.clone();
         self.current_model_idx = 0;
+        
+        // Initialize page numbers and item selections for all models in current chat profile
+        self.chat_page_nums.clear();
+        self.chat_item_selections.clear();
+        for &model_id in &self.current_chat_profile.model_ids {
+            self.chat_page_nums.insert(model_id, 0);
+            self.chat_item_selections.insert(model_id, None);
+        }
+        
         // this doesnt do a db insert, that wont happen until the first message is submitted
         self.chat_history.insert(
             0,
@@ -911,8 +965,15 @@ impl App {
                 self.current_chat_profile = self.default_profile.clone();
             }
 
-            self.chat_content_index = None;
             self.current_model_idx = 0;
+            
+            // Initialize page numbers and item selections for all models in current chat profile
+            self.chat_page_nums.clear();
+            self.chat_item_selections.clear();
+            for &model_id in &self.current_chat_profile.model_ids {
+                self.chat_page_nums.insert(model_id, 0);
+                self.chat_item_selections.insert(model_id, None);
+            }
         }
         Ok(())
     }

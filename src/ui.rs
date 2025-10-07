@@ -335,14 +335,13 @@ fn render_chat_title(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(right_paragraph, title_layout[1]);
 }
 
-fn render_chat_content(f: &mut Frame, app: &App, area: Rect) {
+fn render_chat_content(f: &mut Frame, app: &mut App, area: Rect) {
     let current_messages = app.get_current_messages();
 
     if current_messages.is_none() || current_messages.unwrap().is_empty() {
         let paragraph = Paragraph::new("No messages in this chat")
             .block(
                 Block::default()
-                    // .title(title)
                     .borders(Borders::ALL),
             )
             .alignment(Alignment::Center);
@@ -352,14 +351,28 @@ fn render_chat_content(f: &mut Frame, app: &App, area: Rect) {
 
     let messages = current_messages.unwrap();
     let mut items: Vec<ListItem> = Vec::new();
+    let mut item_line_counts: Vec<usize> = Vec::new();
+
+    // Calculate available height for list items (subtract borders)
+    let available_height = area.height.saturating_sub(2) as usize;
 
     // Get the current model_id properly
     let current_model_id = app.current_chat_profile
         .model_ids
         .get(app.current_model_idx)
         .copied();
+    
+    // Get the current page number for this model
+    let current_page_num = if let Some(model_id) = current_model_id {
+        app.chat_page_nums.get(&model_id).copied().unwrap_or(0)
+    } else {
+        0
+    };
 
-    for (i, message) in messages.iter().enumerate() {
+    // Track how many lines we've used in the current "page"
+    let mut lines_used_in_page = 0;
+
+    for message in messages.iter() {
         let (color, content, alignment) = if let Some(error) = message.error.as_deref() {
             (Color::Red, error, Alignment::Left)
         } else {
@@ -369,8 +382,6 @@ fn render_chat_content(f: &mut Frame, app: &App, area: Rect) {
                 (Color::default(), message.content.as_deref().unwrap_or("[No content]"), Alignment::Left)
             }
         };
-
-        let is_selected = app.chat_content_index.map_or(false, |idx| i == idx);
 
         // Convert markdown to styled text
         let mut text = parse_markdown(&content);
@@ -390,19 +401,34 @@ fn render_chat_content(f: &mut Frame, app: &App, area: Rect) {
             line.alignment = Some(alignment);
         }
         
-        // Apply selection highlighting or error color
-        let list_item = if is_selected {
-            // For selected items, apply cyan color to entire text block
-            ListItem::new(wrapped_text).style(
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            )
-        } else {
-            // For error messages, apply red color to entire text block
-            ListItem::new(wrapped_text).style(Style::default().fg(color))
-        };
-        items.push(list_item);
+        // Process the message, dynamically chunking based on remaining space
+        let total_lines = wrapped_text.lines.len();
+        let mut content_idx = 0;
+        
+        while content_idx < total_lines {
+            // Recalculate space remaining for THIS chunk
+            let space_remaining_in_page = available_height.saturating_sub(lines_used_in_page);
+            
+            // If we can't fit anything, skip to next page
+            if space_remaining_in_page == 0 {
+                lines_used_in_page = 0;
+                continue;
+            }
+            
+            // Determine how much content we can fit
+            let remaining_content = total_lines - content_idx;
+            let chunk_size = remaining_content.min(space_remaining_in_page);
+            let chunk_lines: Vec<Line<'static>> = wrapped_text.lines[content_idx..content_idx + chunk_size].to_vec();
+            let chunk_text = Text::from(chunk_lines);
+            
+            // Add the chunk content
+            let list_item = ListItem::new(chunk_text).style(Style::default().fg(color));
+            items.push(list_item);
+            item_line_counts.push(chunk_size);
+            
+            lines_used_in_page += chunk_size;
+            content_idx += chunk_size;
+        }
 
         // Add loading indicator after user messages if they're currently being processed
         if message.chat_role == ChatRole::User {
@@ -416,22 +442,82 @@ fn render_chat_content(f: &mut Frame, app: &App, area: Rect) {
                             .add_modifier(Modifier::ITALIC),
                     );
                     items.push(loading_item);
+                    item_line_counts.push(1);
+                    
+                    // Update lines used (loading indicator is 1 line)
+                    lines_used_in_page += 1;
+                    if lines_used_in_page >= available_height {
+                        lines_used_in_page = 0;
+                    }
                 }
             }
         }
     }
 
-    let list = List::new(items)
+    // Calculate total pages and wrap current page using modulo
+    let (current_page, total_pages) = if available_height > 0 {
+        let total_lines: usize = item_line_counts.iter().sum();
+        let total_pages = ((total_lines + available_height - 1) / available_height).max(1);
+        
+        // Use modulo to wrap around if page number exceeds total pages
+        let wrapped_page = current_page_num % total_pages;
+        
+        (wrapped_page + 1, total_pages) // Convert to 1-indexed for display
+    } else {
+        (1, 1)
+    };
+
+    // Calculate which items should be visible on the current page
+    let start_line = (current_page - 1) * available_height;
+    let end_line = start_line + available_height;
+    
+    // Find which items fall within the visible line range
+    let mut visible_items = Vec::new();
+    let mut current_line = 0;
+    
+    for (idx, &line_count) in item_line_counts.iter().enumerate() {
+        let item_start = current_line;
+        let item_end = current_line + line_count;
+        
+        // Check if this item overlaps with the visible range
+        if item_start < end_line && item_end > start_line {
+            visible_items.push(items[idx].clone());
+        }
+        
+        current_line += line_count;
+        
+        // Stop processing if we've passed the visible range
+        if current_line >= end_line {
+            break;
+        }
+    }
+
+    let mut state = ListState::default();
+    let current_item_selection = current_model_id.and_then(|model_id| {
+        app.chat_item_selections.get(&model_id).copied().unwrap_or(None)
+    });
+    
+    if let Some(current_item_selection) = current_item_selection && !visible_items.is_empty() {
+        if current_item_selection == 0 {
+            state.select(Some(0));
+        } else {
+            state.select(Some(current_item_selection as usize % visible_items.len()));
+        }
+    } else {
+        state.select(None);
+    }
+
+    let title = format!("{}/{}", current_page, total_pages);
+    let list = List::new(visible_items)
         .block(
             Block::default()
-                // .title(title)
+                .title(title.clone()) // skill issue clone?
+                .title_bottom(title)
+                .title_alignment(Alignment::Center)
                 .borders(Borders::ALL),
         )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-
-    let mut state = ListState::default();
-    state.select(app.chat_content_index);
-
+    
     f.render_stateful_widget(list, area, &mut state);
 }
 
