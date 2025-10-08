@@ -204,7 +204,6 @@ fn render_chat_history(f: &mut Frame, app: &App, area: Rect) {
 
             let base_style = if i == app.chat_history_index {
                 Style::default()
-                    .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
