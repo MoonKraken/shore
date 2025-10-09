@@ -3,6 +3,7 @@ use crate::model::chat::Chat;
 use crate::model::chat::ChatMessage;
 use crate::model::chat::ChatProfile;
 use crate::model::model::Model;
+use crate::model_select_modal::{ModelSelectModal, ModelSelectionMode, ModalResult};
 use crate::provider::OpenAIProvider;
 use crate::provider::provider::ProviderClient;
 use crate::ui::*;
@@ -59,18 +60,6 @@ pub enum AppState {
     TitleEdit,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum ModelSelectionMode {
-    DefaultModels,
-    CurrentChatModels,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum ModelDialogMode {
-    Normal,
-    Search,
-    Visual,
-}
 
 #[derive(Debug)]
 pub enum InferenceEvent {
@@ -116,13 +105,7 @@ pub struct App {
     pub available_models: HashMap<i64, Model>,                   // model_id -> model
     pub provider_names: HashMap<i64, String>,                    // provider_id -> provider name
     // Model selection dialog state
-    pub model_selection_mode: ModelSelectionMode,
-    pub model_selection_index: usize,
-    pub model_selection_states: HashMap<i64, bool>, // model_id -> selected
-    pub model_search_query: String,
-    pub model_dialog_mode: ModelDialogMode,
-    pub model_dialog_numeric_prefix: Option<usize>,
-    pub model_visual_start_index: Option<usize>, // Starting index for visual mode selection
+    pub model_select_modal: Option<ModelSelectModal>,
     // Spinner animation state
     pub spinner_frame: usize,
     pub last_spinner_update: Instant,
@@ -283,13 +266,7 @@ impl App {
             cached_provider_data,
             available_models,
             provider_names,
-            model_selection_mode: ModelSelectionMode::DefaultModels,
-            model_selection_index: 0,
-            model_selection_states: HashMap::new(),
-            model_search_query: String::new(),
-            model_dialog_mode: ModelDialogMode::Normal,
-            model_dialog_numeric_prefix: None,
-            model_visual_start_index: None,
+            model_select_modal: None,
             spinner_frame: 0,
             last_spinner_update: Instant::now(),
             numeric_prefix: None,
@@ -395,10 +372,10 @@ impl App {
         // need to check these first because they still need to work in insert mode
         match key {
             KeyEvent {
-                code: KeyCode::Char('M'),
-                modifiers: KeyModifiers::CONTROL,
+                code: KeyCode::Char('m'),
+                modifiers,
                 ..
-            } => {
+            } if modifiers.contains(KeyModifiers::SHIFT | KeyModifiers::CONTROL) => {
                 self.open_model_selection_dialog(ModelSelectionMode::DefaultModels)
                     .await?;
                 self.numeric_prefix = None;
@@ -477,6 +454,10 @@ impl App {
                             self.current_message_index.insert(model_id, current_msg_idx + 1);
                             self.current_chunk_idx.insert(model_id, 0);
                         }
+
+                        self.chat_item_selections.get_mut(&model_id).map(|x| {
+                            *x = None;
+                        });
                     }
                     self.numeric_prefix = None;
                     return Ok(());
@@ -496,6 +477,10 @@ impl App {
                             // Set to large number; render will clamp to last chunk of previous message
                             self.current_chunk_idx.insert(model_id, usize::MAX);
                         }
+                        
+                        self.chat_item_selections.get_mut(&model_id).map(|x| {
+                            *x = None;
+                        });
                     }
                     self.numeric_prefix = None;
                     return Ok(());
@@ -727,163 +712,25 @@ impl App {
     }
 
     async fn handle_model_selection_key(&mut self, key: KeyEvent) -> Result<()> {
-        match self.model_dialog_mode {
-            ModelDialogMode::Search => self.handle_model_search_input(key).await?,
-            ModelDialogMode::Normal => self.handle_model_normal_mode(key).await?,
-            ModelDialogMode::Visual => self.handle_model_visual_mode(key).await?,
-        }
-        Ok(())
-    }
-
-    async fn handle_model_search_input(&mut self, key: KeyEvent) -> Result<()> {
-        match key.code {
-            KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE => {
-                self.model_search_query.push(c);
-                self.model_selection_index = 0; // Reset selection to top when searching
-            }
-            KeyCode::Backspace => {
-                self.model_search_query.pop();
-                self.model_selection_index = 0;
-            }
-            KeyCode::Enter => {
-                // Exit search mode, go back to normal mode
-                self.model_dialog_mode = ModelDialogMode::Normal;
-            }
-            KeyCode::Esc => {
-                // Clear search string and go back to normal mode
-                self.model_search_query.clear();
-                self.model_selection_index = 0;
-                self.model_dialog_mode = ModelDialogMode::Normal;
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    async fn handle_model_normal_mode(&mut self, key: KeyEvent) -> Result<()> {
-        // Handle numeric prefix accumulation (only for keys without modifiers)
-        if key.modifiers == KeyModifiers::NONE {
-            if let KeyCode::Char(c) = key.code {
-                if c.is_ascii_digit() {
-                    let digit = c.to_digit(10).unwrap() as usize;
-                    self.model_dialog_numeric_prefix = Some(self.model_dialog_numeric_prefix.unwrap_or(0) * 10 + digit);
-                    return Ok(());
+        if let Some(modal) = &mut self.model_select_modal {
+            let result = modal.handle_key(key).await?;
+            
+            match result {
+                ModalResult::Continue => {
+                    // Modal stays open, nothing to do
                 }
-            }
-        }
-
-        let count = self.model_dialog_numeric_prefix.unwrap_or(1);
-        let filtered_models = self.get_filtered_models();
-        let model_count = filtered_models.len();
-
-        match key.code {
-            KeyCode::Esc => {
-                // this will also clear the search string if present
-                if !self.model_search_query.is_empty() {
-                    self.model_search_query.clear();
-                    self.model_selection_index = 0;
-                } else {
-                    // Apply selection and close the dialog
-                    self.apply_model_selection().await?;
+                ModalResult::Apply(selected_models) => {
+                    // Apply the selection and close the modal
+                    self.apply_model_selection(selected_models).await?;
+                    self.model_select_modal = None;
                     self.state = AppState::Normal;
-                    self.model_dialog_numeric_prefix = None;
+                }
+                ModalResult::Cancel => {
+                    // Just close the modal without applying
+                    self.model_select_modal = None;
+                    self.state = AppState::Normal;
                 }
             }
-            KeyCode::Char('j') => {
-                if model_count > 0 {
-                    self.model_selection_index = (self.model_selection_index + count).min(model_count - 1);
-                }
-                self.model_dialog_numeric_prefix = None;
-            }
-            KeyCode::Char('k') => {
-                if model_count > 0 {
-                    self.model_selection_index = self.model_selection_index.saturating_sub(count);
-                }
-                self.model_dialog_numeric_prefix = None;
-            }
-            KeyCode::Char('l') | KeyCode::Char('h') | KeyCode::Char(' ') | KeyCode::Enter => {
-                // Toggle the selected model
-                if let Some((model_id, _)) = filtered_models.get(self.model_selection_index) {
-                    let current_state = self.model_selection_states.get(model_id).unwrap_or(&false);
-                    self.model_selection_states.insert(**model_id, !current_state);
-                }
-                self.model_dialog_numeric_prefix = None;
-            }
-            KeyCode::Char('v') => {
-                // Enter visual mode
-                self.model_dialog_mode = ModelDialogMode::Visual;
-                self.model_visual_start_index = Some(self.model_selection_index);
-                self.model_dialog_numeric_prefix = None;
-            }
-            KeyCode::Char('/') => {
-                // Enter search mode
-                self.model_dialog_mode = ModelDialogMode::Search;
-                self.model_dialog_numeric_prefix = None;
-            }
-            KeyCode::Char('x') | KeyCode::Char('q') | KeyCode::Char('c') | KeyCode::Char('d') => {
-                // Clear search string in normal mode
-                if !self.model_search_query.is_empty() {
-                    self.model_search_query.clear();
-                    self.model_selection_index = 0;
-                }
-                self.model_dialog_numeric_prefix = None;
-            }
-            _ => {
-                // Clear numeric prefix on any other key
-                self.model_dialog_numeric_prefix = None;
-            }
-        }
-        Ok(())
-    }
-
-    async fn handle_model_visual_mode(&mut self, key: KeyEvent) -> Result<()> {
-        match key.code {
-            KeyCode::Char('j') => {
-                let filtered_models = self.get_filtered_models();
-                let model_count = filtered_models.len();
-                if model_count > 0 {
-                    self.model_selection_index = (self.model_selection_index + 1).min(model_count - 1);
-                }
-            }
-            KeyCode::Char('k') => {
-                let filtered_models = self.get_filtered_models();
-                let model_count = filtered_models.len();
-                if model_count > 0 && self.model_selection_index > 0 {
-                    self.model_selection_index = self.model_selection_index.saturating_sub(1);
-                }
-            }
-            KeyCode::Char('l') | KeyCode::Char('h') | KeyCode::Char(' ') | KeyCode::Enter => {
-                // Toggle all models in the visual selection range
-                if let Some(start_idx) = self.model_visual_start_index {
-                    let filtered_models = self.get_filtered_models();
-                    let start = start_idx.min(self.model_selection_index);
-                    let end = start_idx.max(self.model_selection_index);
-                    
-                    // Collect model IDs to toggle
-                    let model_ids_to_toggle: Vec<i64> = (start..=end)
-                        .filter_map(|i| filtered_models.get(i).map(|(model_id, _)| **model_id))
-                        .collect();
-                    
-                    // Check if all selected models are currently enabled
-                    let all_enabled = model_ids_to_toggle.iter().all(|model_id| {
-                        *self.model_selection_states.get(model_id).unwrap_or(&false)
-                    });
-                    
-                    // If all are enabled, disable them all. Otherwise, enable them all.
-                    let new_state = !all_enabled;
-                    
-                    for model_id in model_ids_to_toggle {
-                        self.model_selection_states.insert(model_id, new_state);
-                    }
-                }
-                // Stay in visual mode - don't exit
-            }
-            KeyCode::Esc | KeyCode::Char('v') => {
-                // Exit visual mode
-                self.model_dialog_mode = ModelDialogMode::Normal;
-                self.model_visual_start_index = None;
-            }
-            _ => {}
         }
         Ok(())
     }
@@ -1317,36 +1164,32 @@ impl App {
             }
         }
 
-        self.model_selection_mode = mode.clone();
-        self.model_selection_index = 0;
-        self.model_selection_states.clear();
-        self.model_search_query.clear();
-        self.model_dialog_mode = ModelDialogMode::Normal;
-        self.model_dialog_numeric_prefix = None;
-        self.model_visual_start_index = None;
-
-        // Initialize selection states based on current models
+        // Get the current model IDs based on mode
         let current_models = match mode {
             ModelSelectionMode::DefaultModels => &self.default_profile.model_ids,
             ModelSelectionMode::CurrentChatModels => &self.current_chat_profile.model_ids,
         };
 
-        for &model_id in current_models {
-            self.model_selection_states.insert(model_id, true);
-        }
+        // Create the modal with clones of the data it needs
+        let modal = ModelSelectModal::new(
+            mode,
+            current_models,
+            self.available_models.clone(),
+            self.provider_names.clone(),
+        );
 
+        self.model_select_modal = Some(modal);
         self.state = AppState::ModelSelection;
         Ok(())
     }
 
-    async fn apply_model_selection(&mut self) -> Result<()> {
-        let selected_models: Vec<i64> = self
-            .model_selection_states
-            .iter()
-            .filter_map(|(&model_id, &selected)| if selected { Some(model_id) } else { None })
-            .collect();
+    async fn apply_model_selection(&mut self, selected_models: Vec<i64>) -> Result<()> {
+        // Get the mode from the modal before we apply
+        let mode = self.model_select_modal.as_ref()
+            .map(|m| m.mode.clone())
+            .unwrap_or(ModelSelectionMode::DefaultModels);
 
-        match self.model_selection_mode {
+        match mode {
             ModelSelectionMode::DefaultModels => {
                 // This is kind of inefficient, maybe do better later?
                 for &model_id in &self.default_profile.model_ids {
@@ -1358,7 +1201,12 @@ impl App {
                     self.database.add_chat_profile_model(0, model_id).await?;
                 }
 
-                self.default_profile.model_ids = selected_models;
+                self.default_profile.model_ids = selected_models.clone();
+                
+                // also set it for the current chat if there are no messages yet!
+                if self.current_messages.is_empty() {
+                    self.current_chat_profile.model_ids = selected_models;
+                }
             }
             ModelSelectionMode::CurrentChatModels => {
                 // we don't actually write these to the database
@@ -1370,35 +1218,6 @@ impl App {
         Ok(())
     }
 
-    pub fn get_filtered_models(&self) -> Vec<(&i64, &Model)> {
-        let mut models: Vec<_> = self.available_models.iter().collect();
-
-        // Sort by provider_id then by model name
-        models.sort_by(|(_, a), (_, b)| {
-            a.provider_id
-                .cmp(&b.provider_id)
-                .then_with(|| a.model.cmp(&b.model))
-        });
-
-        // Filter based on search query
-        if !self.model_search_query.is_empty() {
-            let query = self.model_search_query.to_lowercase();
-            models.retain(|(_, model)| {
-                let provider_name = self.get_provider_name(model.provider_id);
-                model.model.to_lowercase().contains(&query)
-                    || provider_name.to_lowercase().contains(&query)
-            });
-        }
-
-        models
-    }
-
-    pub fn get_provider_name(&self, provider_id: i64) -> String {
-        self.provider_names
-            .get(&provider_id)
-            .cloned()
-            .unwrap_or_else(|| format!("Provider {}", provider_id))
-    }
 
     pub fn update_spinner(&mut self) {
         let now = Instant::now();

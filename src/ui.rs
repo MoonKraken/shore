@@ -1,5 +1,5 @@
 use crate::{
-    app::{App, AppState, ModelSelectionMode, ModelDialogMode},
+    app::{App, AppState},
     model::chat::ChatRole,
     markdown::parse_markdown,
 };
@@ -169,7 +169,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(0),
-            Constraint::Length(3),
+            Constraint::Length(3.max(app.textarea.lines.len() + 2) as u16),
         ])
         .split(content_area);
 
@@ -677,182 +677,9 @@ fn render_provider_dialog(f: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_model_selection_dialog(f: &mut Frame, app: &App, area: Rect) {
-    let popup_area = centered_rect(80, 70, area);
-    f.render_widget(Clear, popup_area);
-
-    let base_title = match app.model_selection_mode {
-        ModelSelectionMode::DefaultModels => "Select Default Models",
-        ModelSelectionMode::CurrentChatModels => "Select Models for Current Chat",
-    };
-
-    // Add mode indicator to title
-    let mode_indicator = match app.model_dialog_mode {
-        ModelDialogMode::Normal => "",
-        ModelDialogMode::Search => " [SEARCH]",
-        ModelDialogMode::Visual => " [VISUAL]",
-    };
-    let title = format!("{}{}", base_title, mode_indicator);
-
-    // Always show the search field
-    let layout = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3), // For search box/query display
-            Constraint::Min(0),    // For the table
-            Constraint::Length(3), // For currently enabled models
-        ])
-        .split(popup_area);
-
-    // Render search box
-    let search_text = if app.model_dialog_mode == ModelDialogMode::Search {
-        format!("Search: {}", app.model_search_query)
-    } else if !app.model_search_query.is_empty() {
-        format!("Filter: {}", app.model_search_query)
-    } else {
-        "Search: ".to_string()
-    };
-    
-    let search_style = if app.model_dialog_mode == ModelDialogMode::Search {
-        Style::default().fg(Color::Yellow)
-    } else {
-        Style::default()
-    };
-
-    let search_paragraph = Paragraph::new(search_text)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(search_style),
-        )
-        .alignment(Alignment::Left);
-
-    f.render_widget(search_paragraph, layout[0]);
-    
-    let table_idx = 1;
-    let enabled_models_idx = 2;
-
-    // Get filtered models
-    let filtered_models = app.get_filtered_models();
-
-    // Determine visual selection range if in visual mode
-    let visual_range = if app.model_dialog_mode == ModelDialogMode::Visual {
-        if let Some(start_idx) = app.model_visual_start_index {
-            let start = start_idx.min(app.model_selection_index);
-            let end = start_idx.max(app.model_selection_index);
-            Some((start, end))
-        } else {
-            None
-        }
-    } else {
-        None
-    };
-
-    // Create table rows
-    let rows: Vec<Row> = filtered_models
-        .iter()
-        .enumerate()
-        .map(|(i, (model_id, model))| {
-            let is_selected = app.model_selection_states.get(model_id).unwrap_or(&false);
-            let is_cursor_here = i == app.model_selection_index;
-            let is_in_visual_range = visual_range.map_or(false, |(start, end)| i >= start && i <= end);
-
-            let checkbox = if *is_selected { "[✓]" } else { "[ ]" };
-            let provider_name = app.get_provider_name(model.provider_id);
-
-            let checkbox_style = if *is_selected {
-                Style::default().fg(Color::Green)
-            } else {
-                Style::default()
-            };
-
-            let row_style = if is_cursor_here {
-                // Cursor position always gets yellow + bold
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD)
-            } else if is_in_visual_range {
-                // Visual range gets cyan background or different style
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default()
-            };
-
-            Row::new(vec![
-                Cell::from(Span::styled(checkbox, checkbox_style)),
-                Cell::from(Span::styled(model.model.clone(), row_style)),
-                Cell::from(Span::styled(provider_name, row_style)),
-            ])
-        })
-        .collect();
-
-    let header = Row::new(vec![
-        Cell::from(Span::styled(
-            "",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Cell::from(Span::styled(
-            "Model",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-        Cell::from(Span::styled(
-            "Provider",
-            Style::default().add_modifier(Modifier::BOLD),
-        )),
-    ]);
-
-    let table = Table::new(
-        rows,
-        [
-            Constraint::Length(4),      // Checkbox column
-            Constraint::Percentage(60), // Model name column
-            Constraint::Percentage(36), // Provider column
-        ],
-    )
-    .header(header)
-    .block(
-        Block::default()
-            .title(title)
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Yellow)),
-    )
-    .column_spacing(1);
-
-    f.render_widget(table, layout[table_idx]);
-
-    // Render currently enabled models
-    let enabled_model_names: Vec<String> = app.model_selection_states
-        .iter()
-        .filter_map(|(model_id, &selected)| {
-            if selected {
-                app.available_models.get(model_id).map(|model| {
-                    let provider_name = app.get_provider_name(model.provider_id);
-                    format!("{} ({})", model.model, provider_name)
-                })
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    let enabled_text = if enabled_model_names.is_empty() {
-        "No models selected".to_string()
-    } else {
-        enabled_model_names.join(", ")
-    };
-
-    let enabled_paragraph = Paragraph::new(enabled_text)
-        .block(
-            Block::default()
-                .title("Currently Enabled Models")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Green)),
-        )
-        .alignment(Alignment::Left)
-        .style(Style::default().fg(Color::Green));
-
-    f.render_widget(enabled_paragraph, layout[enabled_models_idx]);
+    if let Some(modal) = &app.model_select_modal {
+        modal.render(f, area);
+    }
 }
 
 fn render_delete_confirmation_dialog(f: &mut Frame, app: &App, area: Rect) {
