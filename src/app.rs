@@ -211,7 +211,7 @@ impl App {
                 let chosen_model_id = find_first_viable_model(&database).await?;
 
                 if let Some(model_id) = chosen_model_id {
-                    database.add_chat_profile_model(0, model_id).await?;
+                    database.set_chat_profile_models(0, vec![model_id]).await?;
                     info!("Added model {} to default chat profile.", model_id);
                 } else {
                     info!(
@@ -725,11 +725,6 @@ impl App {
                     self.model_select_modal = None;
                     self.state = AppState::Normal;
                 }
-                ModalResult::Cancel => {
-                    // Just close the modal without applying
-                    self.model_select_modal = None;
-                    self.state = AppState::Normal;
-                }
             }
         }
         Ok(())
@@ -964,7 +959,9 @@ impl App {
                 for chat in &mut self.chat_history {
                     if chat.id == chat_id {
                         if chat.title.is_none() {
+                            info!("updating chat title...");
                             self.database.update_chat_title(chat_id, &title).await?;
+                            info!("title updated.");
                             chat.title = Some(title.clone());
                             self.current_chat.title = Some(title);
                         } else {
@@ -1191,15 +1188,13 @@ impl App {
 
         match mode {
             ModelSelectionMode::DefaultModels => {
-                // This is kind of inefficient, maybe do better later?
+                // Remove all existing models for the default profile
                 for &model_id in &self.default_profile.model_ids {
                     self.database.remove_chat_profile_model(0, model_id).await?;
                 }
 
-                // Add the selected models to the default profile
-                for &model_id in &selected_models {
-                    self.database.add_chat_profile_model(0, model_id).await?;
-                }
+                // Set the selected models with their order preserved
+                self.database.set_chat_profile_models(0, selected_models.clone()).await?;
 
                 self.default_profile.model_ids = selected_models.clone();
                 

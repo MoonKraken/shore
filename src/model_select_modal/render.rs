@@ -31,7 +31,6 @@ impl ModelSelectModal {
             .constraints([
                 Constraint::Length(3), // For search box/query display
                 Constraint::Min(0),    // For the table
-                Constraint::Length(3), // For currently enabled models
             ])
             .split(popup_area);
 
@@ -61,7 +60,6 @@ impl ModelSelectModal {
         f.render_widget(search_paragraph, layout[0]);
         
         let table_idx = 1;
-        let enabled_models_idx = 2;
 
         // Get filtered models
         let filtered_models = self.get_filtered_models();
@@ -88,6 +86,17 @@ impl ModelSelectModal {
                 let is_cursor_here = i == self.selection_index;
                 let is_in_visual_range = visual_range.map_or(false, |(start, end)| i >= start && i <= end);
 
+                // Get order index for enabled models
+                let order_indicator = if *is_selected {
+                    if let Some(pos) = self.enabled_model_order.iter().position(|id| id == *model_id) {
+                        format!("{}", pos + 1)
+                    } else {
+                        String::new()
+                    }
+                } else {
+                    String::new()
+                };
+
                 let checkbox = if *is_selected { "[✓]" } else { "[ ]" };
                 let provider_name = self.get_provider_name(model.provider_id);
 
@@ -113,6 +122,7 @@ impl ModelSelectModal {
 
                 Row::new(vec![
                     Cell::from(Span::styled(checkbox, checkbox_style)),
+                    Cell::from(Span::styled(order_indicator, checkbox_style)),
                     Cell::from(Span::styled(model.model.clone(), row_style)),
                     Cell::from(Span::styled(provider_name, row_style)),
                 ])
@@ -122,6 +132,10 @@ impl ModelSelectModal {
         let header = Row::new(vec![
             Cell::from(Span::styled(
                 "",
+                Style::default().add_modifier(Modifier::BOLD),
+            )),
+            Cell::from(Span::styled(
+                "#",
                 Style::default().add_modifier(Modifier::BOLD),
             )),
             Cell::from(Span::styled(
@@ -138,7 +152,8 @@ impl ModelSelectModal {
             rows,
             [
                 Constraint::Length(4),      // Checkbox column
-                Constraint::Percentage(60), // Model name column
+                Constraint::Length(4),      // Order indicator column
+                Constraint::Percentage(56), // Model name column
                 Constraint::Percentage(36), // Provider column
             ],
         )
@@ -152,39 +167,6 @@ impl ModelSelectModal {
         .column_spacing(1);
 
         f.render_widget(table, layout[table_idx]);
-
-        // Render currently enabled models
-        let enabled_model_names: Vec<String> = self.selection_states
-            .iter()
-            .filter_map(|(model_id, &selected)| {
-                if selected {
-                    self.available_models.get(model_id).map(|model| {
-                        let provider_name = self.get_provider_name(model.provider_id);
-                        format!("{} ({})", model.model, provider_name)
-                    })
-                } else {
-                    None
-                }
-            })
-            .collect();
-
-        let enabled_text = if enabled_model_names.is_empty() {
-            "No models selected".to_string()
-        } else {
-            enabled_model_names.join(", ")
-        };
-
-        let enabled_paragraph = Paragraph::new(enabled_text)
-            .block(
-                Block::default()
-                    .title("Currently Enabled Models")
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Green)),
-            )
-            .alignment(Alignment::Left)
-            .style(Style::default().fg(Color::Green));
-
-        f.render_widget(enabled_paragraph, layout[enabled_models_idx]);
     }
 }
 

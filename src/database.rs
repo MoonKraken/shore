@@ -161,6 +161,7 @@ impl Database {
             SELECT model_id
             FROM chat_model
             WHERE chat_id = ?
+            ORDER BY display_order ASC
             "#
         )
         .bind(chat_id)
@@ -185,30 +186,22 @@ impl Database {
         Ok(tools)
     }
 
-    pub async fn add_chat_model(&self, chat_id: i64, model_id: i64) -> Result<()> {
-        sqlx::query("INSERT OR IGNORE INTO chat_model (chat_id, model_id) VALUES (?, ?)")
-            .bind(chat_id)
-            .bind(model_id)
-            .execute(&self.pool)
-            .await?;
-
-        Ok(())
-    }
-
     // this should only ever be called once for each chat
     #[instrument(skip_all)]
     pub async fn set_chat_models(&self, chat_id: i64, model_ids: Vec<i64>) -> Result<()> {
+        sqlx::query("DELETE FROM chat_model WHERE chat_id = ?").bind(chat_id).execute(&self.pool).await?;
         if model_ids.is_empty() {
             return Ok(());
         }
 
         let mut query_builder = QueryBuilder::<Sqlite>::new(
-            "INSERT INTO chat_model (chat_id, model_id) "
+            "INSERT INTO chat_model (chat_id, model_id, display_order) "
         );
 
-        query_builder.push_values(model_ids, |mut b, model_id| {
+        query_builder.push_values(model_ids.iter().enumerate(), |mut b, (index, model_id)| {
             b.push_bind(chat_id)
-             .push_bind(model_id);
+             .push_bind(model_id)
+             .push_bind(index as i64);
         });
 
         query_builder.build().execute(&self.pool).await?;
@@ -222,7 +215,7 @@ impl Database {
         }
 
         let mut query_builder = QueryBuilder::<Sqlite>::new(
-            "INSERT INTO chat_model (chat_id, model_id) "
+            "INSERT INTO chat_tool (chat_id, tool_id) "
         );
 
         query_builder.push_values(tool_ids, |mut b, tool_id| {
@@ -237,6 +230,7 @@ impl Database {
 
     #[instrument(level = "info", skip(self))]
     pub async fn update_chat_title(&self, chat_id: i64, title: &String) -> Result<()> {
+        info!("is this function really being called 10 times?");
         sqlx::query("UPDATE chat SET title = ? WHERE id = ?")
             .bind(title)
             .bind(chat_id)
@@ -247,9 +241,9 @@ impl Database {
     }
 
     pub async fn get_chat_profile(&self, profile_id: i64) -> Result<ChatProfile> {
-        // Get model IDs for this profile
+        // Get model IDs for this profile, ordered by display_order
         let model_ids: Vec<i64> = sqlx::query_scalar::<_, i64>(
-            "SELECT model_id FROM chat_profile_model WHERE profile_id = ?"
+            "SELECT model_id FROM chat_profile_model WHERE profile_id = ? ORDER BY display_order ASC"
         )
         .bind(profile_id)
         .fetch_all(&self.pool)
@@ -270,16 +264,6 @@ impl Database {
         })
     }
 
-    pub async fn add_chat_profile_model(&self, profile_id: i64, model_id: i64) -> Result<()> {
-        sqlx::query("INSERT OR IGNORE INTO chat_profile_model (profile_id, model_id) VALUES (?, ?)")
-            .bind(profile_id)
-            .bind(model_id)
-            .execute(&self.pool)
-            .await?;
-
-        Ok(())
-    }
-
     pub async fn remove_chat_profile_model(&self, profile_id: i64, model_id: i64) -> Result<()> {
         sqlx::query("DELETE FROM chat_profile_model WHERE profile_id = ? AND model_id = ?")
             .bind(profile_id)
@@ -290,12 +274,24 @@ impl Database {
         Ok(())
     }
 
-    pub async fn add_chat_profile_tool(&self, profile_id: i64, tool_id: i64) -> Result<()> {
-        sqlx::query("INSERT OR IGNORE INTO chat_profile_tool (profile_id, tool_id) VALUES (?, ?)")
-            .bind(profile_id)
-            .bind(tool_id)
-            .execute(&self.pool)
-            .await?;
+    /// Set profile models with explicit ordering
+    pub async fn set_chat_profile_models(&self, profile_id: i64, model_ids: Vec<i64>) -> Result<()> {
+        sqlx::query("DELETE FROM chat_profile_model WHERE profile_id = ?").bind(profile_id).execute(&self.pool).await?;
+        if model_ids.is_empty() {
+            return Ok(());
+        }
+
+        let mut query_builder = QueryBuilder::<Sqlite>::new(
+            "INSERT INTO chat_profile_model (profile_id, model_id, display_order) "
+        );
+
+        query_builder.push_values(model_ids.iter().enumerate(), |mut b, (index, model_id)| {
+            b.push_bind(profile_id)
+             .push_bind(model_id)
+             .push_bind(index as i64);
+        });
+
+        query_builder.build().execute(&self.pool).await?;
 
         Ok(())
     }
@@ -313,7 +309,7 @@ impl Database {
 
     pub async fn create_default_chat_profile(&self, model_id: i64) -> Result<()> {
         // Create default profile with the specified model and no tools
-        self.add_chat_profile_model(0, model_id).await?;
+        self.set_chat_profile_models(0, vec![model_id]).await?;
         
         // Get model details for logging
         if let Ok(models) = self.get_all_models().await {

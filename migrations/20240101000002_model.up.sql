@@ -14,4 +14,7 @@ INSERT INTO model (provider_id, model, disabled, deprecated, created_dt) VALUES
     (1, 'Qwen/Qwen3-235B-A22B-Instruct-2507:cerebras', 0, 0, strftime('%s', 'now')),
     (1, 'Qwen/Qwen3-Next-80B-A3B-Instruct:hyperbolic', 0, 0, strftime('%s', 'now')),
     (1, 'deepseek-ai/DeepSeek-V3.1:fireworks-ai', 0, 0, strftime('%s', 'now')),
-    (2, 'gpt-5', 0, 0, strftime('%s', 'now'));
+    (2, 'gpt-5', 0, 0, strftime('%s', 'now')),
+    (2, 'gpt-5-mini', 0, 0, strftime('%s', 'now')),
+    (2, 'gpt-5-nano', 0, 0, strftime('%s', 'now')),
+    (2, 'gpt-5-pro', 0, 0, strftime('%s', 'now'));

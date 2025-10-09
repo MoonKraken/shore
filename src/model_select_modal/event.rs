@@ -65,36 +65,102 @@ impl ModelSelectModal {
                     return Ok(ModalResult::Apply(selected_models));
                 }
             }
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Move selected enabled model down in order
+                if let Some((model_id, _)) = filtered_models.get(self.selection_index) {
+                    let model_id_value = **model_id;
+                    let is_enabled = *self.selection_states.get(&model_id_value).unwrap_or(&false);
+                    if is_enabled {
+                        self.move_model_down(model_id_value);
+                        // Move selection down with the model if not at the end
+                        if self.selection_index < model_count - 1 {
+                            self.selection_index += 1;
+                        }
+                    }
+                }
+                self.numeric_prefix = None;
+                self.last_key = None;
+            }
+            KeyCode::Char('k') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Move selected enabled model up in order
+                if let Some((model_id, _)) = filtered_models.get(self.selection_index) {
+                    let model_id_value = **model_id;
+                    let is_enabled = *self.selection_states.get(&model_id_value).unwrap_or(&false);
+                    if is_enabled {
+                        self.move_model_up(model_id_value);
+                        // Move selection up with the model if not at the top
+                        if self.selection_index > 0 {
+                            self.selection_index -= 1;
+                        }
+                    }
+                }
+                self.numeric_prefix = None;
+                self.last_key = None;
+            }
             KeyCode::Char('j') => {
                 if model_count > 0 {
                     self.selection_index = (self.selection_index + count).min(model_count - 1);
                 }
                 self.numeric_prefix = None;
+                self.last_key = None;
             }
             KeyCode::Char('k') => {
                 if model_count > 0 {
                     self.selection_index = self.selection_index.saturating_sub(count);
                 }
                 self.numeric_prefix = None;
+                self.last_key = None;
+            }
+            KeyCode::Char('g') if key.modifiers == KeyModifiers::NONE => {
+                // Check if last key was also 'g' for 'gg' command
+                if self.last_key == Some('g') {
+                    // Go to first item
+                    self.selection_index = 0;
+                    self.last_key = None;
+                } else {
+                    // Track 'g' for potential 'gg'
+                    self.last_key = Some('g');
+                }
+                self.numeric_prefix = None;
+            }
+            KeyCode::Char('G') if key.modifiers == KeyModifiers::SHIFT => {
+                // Go to last item
+                if model_count > 0 {
+                    self.selection_index = model_count - 1;
+                }
+                self.numeric_prefix = None;
+                self.last_key = None;
             }
             KeyCode::Char('l') | KeyCode::Char('h') | KeyCode::Char(' ') | KeyCode::Enter => {
                 // Toggle the selected model
                 if let Some((model_id, _)) = filtered_models.get(self.selection_index) {
-                    let current_state = self.selection_states.get(model_id).unwrap_or(&false);
-                    self.selection_states.insert(**model_id, !current_state);
+                    let model_id_value = **model_id;
+                    let current_state = *self.selection_states.get(&model_id_value).unwrap_or(&false);
+                    let new_state = !current_state;
+                    self.selection_states.insert(model_id_value, new_state);
+                    
+                    // Update the enabled_model_order
+                    if new_state {
+                        self.add_to_order(model_id_value);
+                    } else {
+                        self.remove_from_order(model_id_value);
+                    }
                 }
                 self.numeric_prefix = None;
+                self.last_key = None;
             }
             KeyCode::Char('v') => {
                 // Enter visual mode
                 self.dialog_mode = ModelDialogMode::Visual;
                 self.visual_start_index = Some(self.selection_index);
                 self.numeric_prefix = None;
+                self.last_key = None;
             }
             KeyCode::Char('/') => {
                 // Enter search mode
                 self.dialog_mode = ModelDialogMode::Search;
                 self.numeric_prefix = None;
+                self.last_key = None;
             }
             KeyCode::Char('x') | KeyCode::Char('q') | KeyCode::Char('c') | KeyCode::Char('d') => {
                 // Clear search string in normal mode
@@ -103,10 +169,12 @@ impl ModelSelectModal {
                     self.selection_index = 0;
                 }
                 self.numeric_prefix = None;
+                self.last_key = None;
             }
             _ => {
                 // Clear numeric prefix on any other key
                 self.numeric_prefix = None;
+                self.last_key = None;
             }
         }
         Ok(ModalResult::Continue)
@@ -150,6 +218,13 @@ impl ModelSelectModal {
                     
                     for model_id in model_ids_to_toggle {
                         self.selection_states.insert(model_id, new_state);
+                        
+                        // Update the enabled_model_order
+                        if new_state {
+                            self.add_to_order(model_id);
+                        } else {
+                            self.remove_from_order(model_id);
+                        }
                     }
                 }
                 // Stay in visual mode - don't exit
