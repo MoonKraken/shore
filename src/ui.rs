@@ -370,15 +370,16 @@ fn render_chat_content(f: &mut Frame, app: &mut App, area: Rect) {
         }
     };
     
-    // Pre-process all messages to determine their chunks
-    struct MessageChunks {
-        message_idx: usize,
-        chunks: Vec<(Vec<Line<'static>>, Color)>, // (lines, color)
-    }
+    // Single-pass rendering: process messages starting at current_msg_idx
+    // and stop once we've filled the screen and determined current message's chunk count
+    let mut visible_items: Vec<ListItem> = Vec::new();
+    let mut lines_used = 0;
+    let mut current_message_chunks_count: Option<usize> = None;
     
-    let mut all_message_chunks: Vec<MessageChunks> = Vec::new();
-    
-    for (msg_idx, message) in messages.iter().enumerate() {
+    for msg_idx in current_msg_idx..messages.len() {
+        let message = &messages[msg_idx];
+        
+        // Determine message styling and content
         let (color, content, alignment) = if let Some(error) = message.error.as_deref() {
             (Color::Red, error, Alignment::Left)
         } else {
@@ -389,6 +390,7 @@ fn render_chat_content(f: &mut Frame, app: &mut App, area: Rect) {
             }
         };
 
+        // Parse and wrap text
         let mut text = parse_markdown(&content);
         
         if !app.search_query.is_empty() {
@@ -402,91 +404,49 @@ fn render_chat_content(f: &mut Frame, app: &mut App, area: Rect) {
             line.alignment = Some(alignment);
         }
         
-        // Chunk this message based on available_height
+        // Calculate chunks for this message
         let total_lines = wrapped_text.lines.len();
-        let mut chunks = Vec::new();
-        let mut line_idx = 0;
+        let num_chunks = (total_lines + available_height - 1) / available_height; // ceiling division
         
-        while line_idx < total_lines {
-            let remaining_lines = total_lines - line_idx;
-            let chunk_size = remaining_lines.min(available_height);
-            let chunk_lines: Vec<Line<'static>> = wrapped_text.lines[line_idx..line_idx + chunk_size].to_vec();
-            chunks.push((chunk_lines, color));
-            line_idx += chunk_size;
-        }
-        
-        all_message_chunks.push(MessageChunks {
-            message_idx: msg_idx,
-            chunks,
-        });
-        
-        // Add loading indicator as a separate "message" if applicable
-        if message.chat_role == ChatRole::User && app.is_message_loading(model_id, message.id) {
-            let spinner_char = app.get_spinner_char().to_string();
-            let loading_line = Line::from(spinner_char).alignment(Alignment::Center);
-            all_message_chunks.push(MessageChunks {
-                message_idx: msg_idx, // associate with user message
-                chunks: vec![(vec![loading_line], Color::Gray)],
-            });
-        }
-    }
-    
-    // Update current_message_chunks_length for the current message
-    let chunks_len = if let Some(msg_chunks) = all_message_chunks.iter().find(|mc| mc.message_idx == current_msg_idx) {
-        msg_chunks.chunks.len()
-    } else {
-        // Current message index is out of bounds, reset to 0
-        app.current_message_index.insert(model_id, 0);
-        app.current_chunk_idx.insert(model_id, 0);
-        app.current_message_chunks_length.insert(model_id, 1);
-        return; // Re-render will happen next frame
-    };
-    
-    app.current_message_chunks_length.insert(model_id, chunks_len);
-    
-    // Clamp current_chunk_idx if it was set to usize::MAX (from 'k' navigation)
-    if current_chunk_idx >= chunks_len {
-        current_chunk_idx = chunks_len.saturating_sub(1);
-        app.current_chunk_idx.insert(model_id, current_chunk_idx);
-    }
-    
-    // Now render starting from current message's current chunk
-    let mut visible_items: Vec<ListItem> = Vec::new();
-    let mut lines_used = 0;
-    
-    for msg_chunks in &all_message_chunks {
-        if msg_chunks.message_idx < current_msg_idx {
-            continue; // Skip messages before current
-        }
-        
-        let start_chunk_idx = if msg_chunks.message_idx == current_msg_idx {
-            current_chunk_idx
-        } else {
-            0
-        };
-        
-        for (chunk_idx, (chunk_lines, color)) in msg_chunks.chunks.iter().enumerate() {
-            if msg_chunks.message_idx == current_msg_idx && chunk_idx < start_chunk_idx {
-                continue; // Skip chunks before current chunk in current message
-            }
+        // Store chunk count for current message
+        if msg_idx == current_msg_idx {
+            current_message_chunks_count = Some(num_chunks);
             
+            // Clamp current_chunk_idx if needed
+            if current_chunk_idx >= num_chunks {
+                current_chunk_idx = num_chunks.saturating_sub(1);
+                app.current_chunk_idx.insert(model_id, current_chunk_idx);
+            }
+        }
+        
+        // Determine which chunk to start from
+        let start_chunk = if msg_idx == current_msg_idx { current_chunk_idx } else { 0 };
+        
+        // Render chunks starting from start_chunk
+        for chunk_idx in start_chunk..num_chunks {
+            let start_line = chunk_idx * available_height;
+            let end_line = (start_line + available_height).min(total_lines);
+            let chunk_lines: Vec<Line<'static>> = wrapped_text.lines[start_line..end_line].to_vec();
             let chunk_line_count = chunk_lines.len();
             
+            // Check if we have space for this chunk
             if lines_used + chunk_line_count > available_height {
-                // Can't fit this whole chunk, see if we can fit part of it
+                // Try to fit partial chunk
                 let space_remaining = available_height.saturating_sub(lines_used);
                 if space_remaining > 0 {
                     let partial_lines: Vec<Line<'static>> = chunk_lines[..space_remaining].to_vec();
                     let chunk_text = Text::from(partial_lines);
-                    let list_item = ListItem::new(chunk_text).style(Style::default().fg(*color));
+                    let list_item = ListItem::new(chunk_text).style(Style::default().fg(color));
                     visible_items.push(list_item);
                 }
-                // We're out of space
+                // Out of space, stop rendering
+                lines_used = available_height;
                 break;
             }
             
-            let chunk_text = Text::from(chunk_lines.clone());
-            let list_item = ListItem::new(chunk_text).style(Style::default().fg(*color));
+            // Add this chunk to visible items
+            let chunk_text = Text::from(chunk_lines);
+            let list_item = ListItem::new(chunk_text).style(Style::default().fg(color));
             visible_items.push(list_item);
             lines_used += chunk_line_count;
             
@@ -495,9 +455,29 @@ fn render_chat_content(f: &mut Frame, app: &mut App, area: Rect) {
             }
         }
         
-        if lines_used >= available_height {
+        // Add loading indicator if applicable
+        if message.chat_role == ChatRole::User && app.is_message_loading(model_id, message.id) {
+            if lines_used < available_height {
+                let spinner_char = app.get_spinner_char().to_string();
+                let loading_line = Line::from(spinner_char).alignment(Alignment::Center);
+                let loading_text = Text::from(vec![loading_line]);
+                let list_item = ListItem::new(loading_text).style(Style::default().fg(Color::Gray));
+                visible_items.push(list_item);
+                lines_used += 1;
+            }
+        }
+        
+        // Stop if we've filled the screen and have current message's chunk count
+        if lines_used >= available_height && current_message_chunks_count.is_some() {
             break;
         }
+    }
+    
+    // Update current message's chunk count
+    if let Some(chunks_len) = current_message_chunks_count {
+        app.current_message_chunks_length.insert(model_id, chunks_len);
+    } else {
+        app.current_message_chunks_length.insert(model_id, 1);
     }
     
     // Display current message index in title
