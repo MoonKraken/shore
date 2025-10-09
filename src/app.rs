@@ -96,7 +96,9 @@ pub struct App {
     pub chat_history: Vec<Chat>,
     pub current_messages: HashMap<i64, Vec<ChatMessage>>, // model_id -> messages
     pub chat_history_index: usize,
-    pub chat_page_nums: HashMap<i64, usize>, // model_id -> page number (0-indexed)
+    pub current_message_index: HashMap<i64, usize>, // model_id -> message index (0-indexed)
+    pub current_chunk_idx: HashMap<i64, usize>, // model_id -> chunk index within current message
+    pub current_message_chunks_length: HashMap<i64, usize>, // model_id -> number of chunks in current message (written by render)
     pub chat_item_selections: HashMap<i64, Option<i64>>, // model_id -> relative item index (0=none, positive=from start, negative=from end)
     pub chat_history_collapsed: bool,
     pub textarea: EditorState,
@@ -262,7 +264,9 @@ impl App {
             chat_history,
             current_messages: HashMap::new(),
             chat_history_index: 0,
-            chat_page_nums: HashMap::new(),
+            current_message_index: HashMap::new(),
+            current_chunk_idx: HashMap::new(),
+            current_message_chunks_length: HashMap::new(),
             chat_item_selections: HashMap::new(),
             chat_history_collapsed: false,
             textarea: EditorState::default(),
@@ -458,19 +462,40 @@ impl App {
                     return Ok(());
                 }
                 KeyCode::Char('j') => {
-                    // Increment page (go down one page in chat content)
+                    // Navigate down through message chunks
                     if let Some(&model_id) = self.current_chat_profile.model_ids.get(self.current_model_idx) {
-                        let current_page = self.chat_page_nums.get(&model_id).copied().unwrap_or(0);
-                        self.chat_page_nums.insert(model_id, current_page + 1);
+                        let current_chunk_idx = self.current_chunk_idx.get(&model_id).copied().unwrap_or(0);
+                        let chunks_length = self.current_message_chunks_length.get(&model_id).copied().unwrap_or(1);
+                        let current_msg_idx = self.current_message_index.get(&model_id).copied().unwrap_or(0);
+                        let total_messages = self.current_messages.get(&model_id).map(|msgs| msgs.len()).unwrap_or(0);
+                        
+                        // Try to increment chunk_idx first
+                        if current_chunk_idx + 1 < chunks_length {
+                            self.current_chunk_idx.insert(model_id, current_chunk_idx + 1);
+                        } else if current_msg_idx + 1 < total_messages {
+                            // At last chunk, move to next message
+                            self.current_message_index.insert(model_id, current_msg_idx + 1);
+                            self.current_chunk_idx.insert(model_id, 0);
+                        }
                     }
                     self.numeric_prefix = None;
                     return Ok(());
                 }
                 KeyCode::Char('k') => {
-                    // Decrement page (go up one page in chat content)
+                    // Navigate up through message chunks
                     if let Some(&model_id) = self.current_chat_profile.model_ids.get(self.current_model_idx) {
-                        let current_page = self.chat_page_nums.get(&model_id).copied().unwrap_or(0);
-                        self.chat_page_nums.insert(model_id, current_page.saturating_sub(1));
+                        let current_chunk_idx = self.current_chunk_idx.get(&model_id).copied().unwrap_or(0);
+                        let current_msg_idx = self.current_message_index.get(&model_id).copied().unwrap_or(0);
+                        
+                        if current_chunk_idx > 0 {
+                            // Move to previous chunk in same message
+                            self.current_chunk_idx.insert(model_id, current_chunk_idx - 1);
+                        } else if current_msg_idx > 0 {
+                            // At first chunk, move to previous message (render will set chunk to last)
+                            self.current_message_index.insert(model_id, current_msg_idx - 1);
+                            // Set to large number; render will clamp to last chunk of previous message
+                            self.current_chunk_idx.insert(model_id, usize::MAX);
+                        }
                     }
                     self.numeric_prefix = None;
                     return Ok(());
@@ -903,11 +928,15 @@ impl App {
         self.current_chat_profile = self.default_profile.clone();
         self.current_model_idx = 0;
         
-        // Initialize page numbers and item selections for all models in current chat profile
-        self.chat_page_nums.clear();
+        // Initialize navigation state and item selections for all models in current chat profile
+        self.current_message_index.clear();
+        self.current_chunk_idx.clear();
+        self.current_message_chunks_length.clear();
         self.chat_item_selections.clear();
         for &model_id in &self.current_chat_profile.model_ids {
-            self.chat_page_nums.insert(model_id, 0);
+            self.current_message_index.insert(model_id, 0);
+            self.current_chunk_idx.insert(model_id, 0);
+            self.current_message_chunks_length.insert(model_id, 1);
             self.chat_item_selections.insert(model_id, None);
         }
         
@@ -967,11 +996,15 @@ impl App {
 
             self.current_model_idx = 0;
             
-            // Initialize page numbers and item selections for all models in current chat profile
-            self.chat_page_nums.clear();
+            // Initialize navigation state and item selections for all models in current chat profile
+            self.current_message_index.clear();
+            self.current_chunk_idx.clear();
+            self.current_message_chunks_length.clear();
             self.chat_item_selections.clear();
             for &model_id in &self.current_chat_profile.model_ids {
-                self.chat_page_nums.insert(model_id, 0);
+                self.current_message_index.insert(model_id, 0);
+                self.current_chunk_idx.insert(model_id, 0);
+                self.current_message_chunks_length.insert(model_id, 1);
                 self.chat_item_selections.insert(model_id, None);
             }
         }
@@ -1011,9 +1044,12 @@ impl App {
             (chat_id, true)
         };
 
-        let message = ChatMessage::new_user_message(chat_id, content.clone());
+        let mut message = ChatMessage::new_user_message(chat_id, content.clone());
         // write the user message to the database here because we only need to do this once
         let message_id = self.database.add_chat_message(&message).await?;
+        
+        // Update the message with the actual ID from the database
+        message.id = message_id;
 
         let message_2 = message.clone();
         self.current_messages
