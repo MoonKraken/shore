@@ -728,6 +728,7 @@ impl App {
                     .get_mut(&self.current_chat_profile.model_ids[self.current_model_idx])
                 {
                     *model_id = None;
+                    self.current_selected_message_index = None;
                 } else {
                     let mut event_handler = EditorEventHandler::default();
                     event_handler.on_key_event(key, &mut self.textarea);
