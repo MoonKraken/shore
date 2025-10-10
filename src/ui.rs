@@ -1,9 +1,9 @@
 use crate::{
     app::{App, AppState},
-    model::chat::ChatRole,
     markdown::parse_markdown,
+    model::chat::ChatRole,
 };
-use edtui::{EditorView, EditorTheme};
+use edtui::{EditorTheme, EditorView};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -16,17 +16,23 @@ use ratatui::{
 fn wrap_text(text: Text, max_width: usize) -> Text<'static> {
     if max_width == 0 {
         // Convert to owned 'static version
-        let owned_lines: Vec<Line<'static>> = text.lines.into_iter().map(|line| {
-            let owned_spans: Vec<Span<'static>> = line.spans.into_iter().map(|span| {
-                Span::styled(span.content.to_string(), span.style)
-            }).collect();
-            Line::from(owned_spans)
-        }).collect();
+        let owned_lines: Vec<Line<'static>> = text
+            .lines
+            .into_iter()
+            .map(|line| {
+                let owned_spans: Vec<Span<'static>> = line
+                    .spans
+                    .into_iter()
+                    .map(|span| Span::styled(span.content.to_string(), span.style))
+                    .collect();
+                Line::from(owned_spans)
+            })
+            .collect();
         return Text::from(owned_lines);
     }
 
     let mut wrapped_lines: Vec<Line<'static>> = Vec::new();
-    
+
     for line in text.lines {
         // Handle empty lines
         if line.spans.is_empty() || (line.spans.len() == 1 && line.spans[0].content.is_empty()) {
@@ -36,7 +42,7 @@ fn wrap_text(text: Text, max_width: usize) -> Text<'static> {
 
         // Collect all styled segments (word + style)
         let mut segments: Vec<(String, Style)> = Vec::new();
-        
+
         for span in &line.spans {
             // Split the span content into words while preserving the style
             let words: Vec<&str> = span.content.split_whitespace().collect();
@@ -56,7 +62,7 @@ fn wrap_text(text: Text, max_width: usize) -> Text<'static> {
 
         for (word, style) in segments.iter() {
             let word_width = word.chars().count();
-            
+
             // If the word itself is longer than max_width, we need to break it
             if word_width > max_width {
                 if !current_spans.is_empty() {
@@ -64,7 +70,7 @@ fn wrap_text(text: Text, max_width: usize) -> Text<'static> {
                     current_spans = Vec::new();
                     current_width = 0;
                 }
-                
+
                 // Break the long word into chunks
                 let chars: Vec<char> = word.chars().collect();
                 for chunk in chars.chunks(max_width) {
@@ -73,7 +79,7 @@ fn wrap_text(text: Text, max_width: usize) -> Text<'static> {
                 }
                 continue;
             }
-            
+
             // Check if adding this word would exceed the max width
             let space_width = if current_width == 0 { 0 } else { 1 };
             if current_width + space_width + word_width > max_width {
@@ -83,7 +89,7 @@ fn wrap_text(text: Text, max_width: usize) -> Text<'static> {
                     current_width = 0;
                 }
             }
-            
+
             // Add space before word if not at the start of a line
             if current_width > 0 {
                 // Try to merge with previous span if same style
@@ -107,12 +113,12 @@ fn wrap_text(text: Text, max_width: usize) -> Text<'static> {
                 current_width += word_width;
             }
         }
-        
+
         if !current_spans.is_empty() {
             wrapped_lines.push(Line::from(current_spans));
         }
     }
-    
+
     Text::from(wrapped_lines)
 }
 
@@ -206,11 +212,10 @@ fn render_chat_history(f: &mut Frame, app: &App, area: Rect) {
                 line.alignment = Some(Alignment::Center);
                 line
             } else {
-             let title=   chat.title.clone().unwrap_or_else(|| "New Chat".to_string());
+                let title = chat.title.clone().unwrap_or_else(|| "New Chat".to_string());
                 // Highlight search terms if we're searching
                 let base_style = if i == app.chat_history_index {
-                    Style::default()
-                        .add_modifier(Modifier::BOLD)
+                    Style::default().add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
                 };
@@ -238,20 +243,17 @@ fn render_chat_history(f: &mut Frame, app: &App, area: Rect) {
 fn render_search_input(f: &mut Frame, app: &mut App, area: Rect) {
     if app.state == AppState::SearchMode {
         // In search mode, show the editable search input
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .title("Search");
+        let block = Block::default().borders(Borders::ALL).title("Search");
         let inner_area = block.inner(area);
         f.render_widget(block, area);
-        
+
         let theme = EditorTheme {
             status_line: None,
             base: Style::default().bg(Color::Reset),
             ..Default::default()
         };
-        
-        let editor = EditorView::new(&mut app.search_textarea)
-            .theme(theme);
+
+        let editor = EditorView::new(&mut app.search_textarea).theme(theme);
 
         f.render_widget(editor, inner_area);
     } else {
@@ -271,32 +273,32 @@ fn highlight_text(text: &str, query: &str, base_style: Style) -> Line<'static> {
 
     let query_lower = query.to_lowercase();
     let text_lower = text.to_lowercase();
-    
+
     let mut spans = Vec::new();
     let mut last_end = 0;
-    
+
     // Find all occurrences of the query (case-insensitive)
     for (idx, _) in text_lower.match_indices(&query_lower) {
         // Add the text before the match
         if idx > last_end {
             spans.push(Span::styled(text[last_end..idx].to_string(), base_style));
         }
-        
+
         // Add the matched text with yellow background
         let match_end = idx + query.len();
         spans.push(Span::styled(
             text[idx..match_end].to_string(),
             base_style.bg(Color::Yellow).fg(Color::Black),
         ));
-        
+
         last_end = match_end;
     }
-    
+
     // Add any remaining text
     if last_end < text.len() {
         spans.push(Span::styled(text[last_end..].to_string(), base_style));
     }
-    
+
     Line::from(spans)
 }
 
@@ -310,7 +312,10 @@ fn render_chat_title(f: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
-    let title_paragraph = if app.title_inference_in_progress_by_chat.contains(&app.current_chat.id) {
+    let title_paragraph = if app
+        .title_inference_in_progress_by_chat
+        .contains(&app.current_chat.id)
+    {
         let spinner_char = format!("    {}", app.get_spinner_char());
         let loading_line = Line::from(spinner_char);
         let loading_text = Text::from(vec![loading_line]);
@@ -352,11 +357,12 @@ fn render_chat_content(f: &mut Frame, app: &mut App, area: Rect) {
     let available_height = area.height.saturating_sub(2) as usize;
 
     // Get the current model_id
-    let current_model_id = app.current_chat_profile
+    let current_model_id = app
+        .current_chat_profile
         .model_ids
         .get(app.current_model_idx)
         .copied();
-    
+
     let Some(model_id) = current_model_id else {
         let paragraph = Paragraph::new("No model selected")
             .block(Block::default().borders(Borders::ALL))
@@ -366,83 +372,102 @@ fn render_chat_content(f: &mut Frame, app: &mut App, area: Rect) {
     };
 
     // Get navigation state
-    let current_msg_idx = app.current_message_index.get(&model_id).copied().unwrap_or(0);
+    let current_msg_idx = app
+        .current_message_index
+        .get(&model_id)
+        .copied()
+        .unwrap_or(0);
     let mut current_chunk_idx = app.current_chunk_idx.get(&model_id).copied().unwrap_or(0);
-    
+
     // Clone the messages to avoid holding a borrow on app
     let messages = match app.get_current_messages() {
         Some(msgs) if !msgs.is_empty() => msgs.clone(),
         _ => {
             let paragraph = Paragraph::new("No messages in this chat")
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL),
-                )
+                .block(Block::default().borders(Borders::ALL))
                 .alignment(Alignment::Center);
             f.render_widget(paragraph, area);
             return;
         }
     };
-    
+
     // Single-pass rendering: process messages starting at current_msg_idx
     // and stop once we've filled the screen and determined current message's chunk count
     let mut visible_items: Vec<ListItem> = Vec::new();
     let mut lines_used = 0;
     let mut current_message_chunks_count: Option<usize> = None;
-    
+
+    let current_item_selection = app
+        .chat_item_selections
+        .get(&model_id)
+        .copied()
+        .unwrap_or(None);
+
     for msg_idx in current_msg_idx..messages.len() {
         let message = &messages[msg_idx];
-        
+
         // Determine message styling and content
         let (color, content, alignment) = if let Some(error) = message.error.as_deref() {
             (Color::Red, error, Alignment::Left)
         } else {
             if message.chat_role == ChatRole::User {
-                (Color::Green, message.content.as_deref().unwrap_or("[No content]"), Alignment::Right)
+                (
+                    Color::Green,
+                    message.content.as_deref().unwrap_or("[No content]"),
+                    Alignment::Right,
+                )
             } else {
-                (Color::default(), message.content.as_deref().unwrap_or("[No content]"), Alignment::Left)
+                (
+                    Color::default(),
+                    message.content.as_deref().unwrap_or("[No content]"),
+                    Alignment::Left,
+                )
             }
         };
 
         // Parse and wrap text
         let mut text = parse_markdown(&content);
-        
+
         if !app.search_query.is_empty() {
             text = highlight_text_in_parsed(&text, &app.search_query);
         }
-        
+
         let mut wrapped_text = wrap_text(text, (area.width as usize).saturating_sub(4));
         wrapped_text.lines.push(Line::from(""));
-        
+
         for line in &mut wrapped_text.lines {
             line.alignment = Some(alignment);
         }
-        
+
         // Calculate chunks for this message
         let total_lines = wrapped_text.lines.len();
         let num_chunks = (total_lines + available_height - 1) / available_height; // ceiling division
-        
+
         // Store chunk count for current message
         if msg_idx == current_msg_idx {
             current_message_chunks_count = Some(num_chunks);
-            
+
             // Clamp current_chunk_idx if needed
             if current_chunk_idx >= num_chunks {
                 current_chunk_idx = num_chunks.saturating_sub(1);
                 app.current_chunk_idx.insert(model_id, current_chunk_idx);
             }
         }
-        
+
         // Determine which chunk to start from
-        let start_chunk = if msg_idx == current_msg_idx { current_chunk_idx } else { 0 };
-        
+        let start_chunk = if msg_idx == current_msg_idx {
+            current_chunk_idx
+        } else {
+            0
+        };
+
         // Render chunks starting from start_chunk
         for chunk_idx in start_chunk..num_chunks {
             let start_line = chunk_idx * available_height;
             let end_line = (start_line + available_height).min(total_lines);
             let chunk_lines: Vec<Line<'static>> = wrapped_text.lines[start_line..end_line].to_vec();
             let chunk_line_count = chunk_lines.len();
-            
+
             // Check if we have space for this chunk
             if lines_used + chunk_line_count > available_height {
                 // Try to fit partial chunk
@@ -457,18 +482,25 @@ fn render_chat_content(f: &mut Frame, app: &mut App, area: Rect) {
                 lines_used = available_height;
                 break;
             }
-            
+
             // Add this chunk to visible items
             let chunk_text = Text::from(chunk_lines);
             let list_item = ListItem::new(chunk_text).style(Style::default().fg(color));
             visible_items.push(list_item);
+
+            if let Some(selection_idx) = current_item_selection
+                && selection_idx == visible_items.len() as i64 - 1
+            {
+                app.current_selected_message_index = Some(msg_idx);
+            }
+
             lines_used += chunk_line_count;
-            
+
             if lines_used >= available_height {
                 break;
             }
         }
-        
+
         // Add loading indicator if applicable
         if message.chat_role == ChatRole::User && app.is_message_loading(model_id, message.id) {
             if lines_used < available_height {
@@ -480,32 +512,34 @@ fn render_chat_content(f: &mut Frame, app: &mut App, area: Rect) {
                 lines_used += 1;
             }
         }
-        
+
         // Stop if we've filled the screen and have current message's chunk count
         if lines_used >= available_height && current_message_chunks_count.is_some() {
             break;
         }
     }
-    
+
     // Update current message's chunk count
     if let Some(chunks_len) = current_message_chunks_count {
-        app.current_message_chunks_length.insert(model_id, chunks_len);
+        app.current_message_chunks_length
+            .insert(model_id, chunks_len);
     } else {
         app.current_message_chunks_length.insert(model_id, 1);
     }
-    
+
     // Display current message index in title
     let title = format!("{}/{}", current_msg_idx + 1, messages.len());
-    
+
     let mut state = ListState::default();
-    let current_item_selection = app.chat_item_selections.get(&model_id).copied().unwrap_or(None);
-    
-    if let Some(current_item_selection) = current_item_selection && !visible_items.is_empty() {
+
+    if let Some(current_item_selection) = current_item_selection
+        && !visible_items.is_empty()
+    {
         state.select(Some(current_item_selection as usize % visible_items.len()));
     } else {
         state.select(None);
     }
-    
+
     let list = List::new(visible_items)
         .block(
             Block::default()
@@ -515,7 +549,7 @@ fn render_chat_content(f: &mut Frame, app: &mut App, area: Rect) {
                 .borders(Borders::ALL),
         )
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED));
-    
+
     f.render_stateful_widget(list, area, &mut state);
 }
 
@@ -523,15 +557,14 @@ fn render_prompt_input(f: &mut Frame, app: &mut App, area: Rect) {
     let block = Block::default().borders(Borders::ALL);
     let inner_area = block.inner(area);
     f.render_widget(block, area);
-    
+
     let theme = EditorTheme {
         status_line: None,
         base: Style::default().bg(Color::Reset),
         ..Default::default()
     };
-    
-    let editor = EditorView::new(&mut app.textarea)
-        .theme(theme);
+
+    let editor = EditorView::new(&mut app.textarea).theme(theme);
 
     f.render_widget(editor, inner_area);
 }
@@ -547,15 +580,15 @@ fn highlight_text_in_parsed<'a>(text: &Text<'a>, query: &str) -> Text<'a> {
 
     for line in &text.lines {
         let mut new_spans = Vec::new();
-        
+
         for span in &line.spans {
             let content_lower = span.content.to_lowercase();
-            
+
             if content_lower.contains(&query_lower) {
                 // This span contains the search query, we need to split it
                 let mut last_end = 0;
                 let content_str = span.content.as_ref();
-                
+
                 for (idx, _) in content_lower.match_indices(&query_lower) {
                     // Add text before match
                     if idx > last_end {
@@ -564,17 +597,17 @@ fn highlight_text_in_parsed<'a>(text: &Text<'a>, query: &str) -> Text<'a> {
                             span.style,
                         ));
                     }
-                    
+
                     // Add matched text with yellow background
                     let match_end = idx + query.len();
                     new_spans.push(Span::styled(
                         content_str[idx..match_end].to_string(),
                         span.style.bg(Color::Yellow).fg(Color::Black),
                     ));
-                    
+
                     last_end = match_end;
                 }
-                
+
                 // Add remaining text
                 if last_end < content_str.len() {
                     new_spans.push(Span::styled(
@@ -587,7 +620,7 @@ fn highlight_text_in_parsed<'a>(text: &Text<'a>, query: &str) -> Text<'a> {
                 new_spans.push(span.clone());
             }
         }
-        
+
         let mut new_line = Line::from(new_spans);
         new_line.alignment = line.alignment;
         highlighted_lines.push(new_line);
@@ -765,15 +798,14 @@ fn render_title_edit_dialog(f: &mut Frame, app: &mut App, area: Rect) {
         .title("Edit Chat Title");
     let inner_area = block.inner(layout[0]);
     f.render_widget(block, layout[0]);
-    
+
     let theme = EditorTheme {
         status_line: None,
         base: Style::default().bg(Color::Reset),
         ..Default::default()
     };
-    
-    let editor = EditorView::new(&mut app.title_textarea)
-        .theme(theme);
+
+    let editor = EditorView::new(&mut app.title_textarea).theme(theme);
     f.render_widget(editor, inner_area);
 
     // Instructions

@@ -271,6 +271,17 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_bold_with_period() {
+        let text = parse_markdown("This is **bold**.");
+        assert_eq!(text.lines.len(), 1);
+        
+        // Verify no extra spaces are added between bold text and period
+        let line = &text.lines[0];
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(rendered, "This is bold.");
+    }
+
+    #[test]
     fn test_parse_italic() {
         let text = parse_markdown("This is *italic* text");
         assert_eq!(text.lines.len(), 1);

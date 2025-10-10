@@ -3,17 +3,19 @@ use crate::model::chat::Chat;
 use crate::model::chat::ChatMessage;
 use crate::model::chat::ChatProfile;
 use crate::model::model::Model;
-use crate::model_select_modal::{ModelSelectModal, ModelSelectionMode, ModalResult};
+use crate::model_select_modal::{ModalResult, ModelSelectModal, ModelSelectionMode};
 use crate::provider::OpenAIProvider;
 use crate::provider::provider::ProviderClient;
 use crate::ui::*;
 use anyhow::Result;
+use copypasta::{ClipboardContext, ClipboardProvider};
 use crossterm::{
     event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use edtui::EditorMode;
+use edtui::{EditorEventHandler, EditorState};
 use futures::StreamExt;
 use ratatui::{
     Terminal,
@@ -29,12 +31,13 @@ use tokio::task::JoinHandle;
 use tracing::error;
 use tracing::info;
 use tracing::instrument;
-use edtui::{EditorState, EditorEventHandler};
 
 // Helper function to get text from EditorState
 fn editor_state_to_string(state: &EditorState) -> String {
     // Collect all characters and convert to string
-    let all_chars: String = state.lines.iter()
+    let all_chars: String = state
+        .lines
+        .iter()
         .filter_map(|(ch_opt, _)| ch_opt.copied())
         .collect();
     all_chars
@@ -60,7 +63,6 @@ pub enum AppState {
     TitleEdit,
 }
 
-
 #[derive(Debug)]
 pub enum InferenceEvent {
     InferenceComplete {
@@ -72,9 +74,11 @@ pub enum InferenceEvent {
     TitleInferenceComplete {
         chat_id: i64,
         title: String,
-    }
+    },
 }
 
+// TODO extract everything written to by the rendering process
+// and isolate it in one place so it is clearer where it comes from
 pub struct App {
     pub database: Arc<Database>,
     pub state: AppState,
@@ -85,7 +89,8 @@ pub struct App {
     pub chat_history: Vec<Chat>,
     pub current_messages: HashMap<i64, Vec<ChatMessage>>, // model_id -> messages
     pub chat_history_index: usize,
-    pub current_message_index: HashMap<i64, usize>, // model_id -> message index (0-indexed)
+    pub current_selected_message_index: Option<usize>, // this is populated when rendering
+    pub current_message_index: HashMap<i64, usize>,    // model_id -> message index (0-indexed)
     pub current_chunk_idx: HashMap<i64, usize>, // model_id -> chunk index within current message
     pub current_message_chunks_length: HashMap<i64, usize>, // model_id -> number of chunks in current message (written by render)
     pub chat_item_selections: HashMap<i64, Option<i64>>, // model_id -> relative item index (0=none, positive=from start, negative=from end)
@@ -154,7 +159,10 @@ impl App {
             let api_key_set = std::env::var(&provider_record.api_key_env_var).is_ok();
             if api_key_set {
                 // For now, all providers are OpenAI-compatible, but we can add other types later
-                info!("Creating OpenAI provider client for provider {:?}", provider_record);
+                info!(
+                    "Creating OpenAI provider client for provider {:?}",
+                    provider_record
+                );
                 let provider_client: Arc<dyn ProviderClient> =
                     Arc::new(OpenAIProvider::new(provider_record.clone()));
                 provider_clients.insert(provider_record.id, provider_client);
@@ -270,9 +278,10 @@ impl App {
             spinner_frame: 0,
             last_spinner_update: Instant::now(),
             numeric_prefix: None,
+            current_selected_message_index: None,
         };
-        
-        // this feels a little wrong as it guarantees that we're going to 
+
+        // this feels a little wrong as it guarantees that we're going to
         // initialize the current_chat field at least twice. But the alternative
         // is refactoring create_new_chat and load_selected_chat to not rely on self
         if let Some(_) = app.chat_history.first() {
@@ -390,7 +399,7 @@ impl App {
                     .await?;
                 self.numeric_prefix = None;
                 return Ok(());
-            },
+            }
             KeyEvent {
                 code: KeyCode::Char('p'),
                 modifiers: KeyModifiers::CONTROL,
@@ -419,7 +428,7 @@ impl App {
         let count = self.numeric_prefix.unwrap_or(1);
 
         // When prompt is empty, numbers do other things
-        if is_prompt_empty && key.modifiers == KeyModifiers::NONE {
+        if is_prompt_empty {
             match key.code {
                 KeyCode::Char('h') => {
                     // Decrement current_model_idx
@@ -440,18 +449,37 @@ impl App {
                 }
                 KeyCode::Char('j') => {
                     // Navigate down through message chunks
-                    if let Some(&model_id) = self.current_chat_profile.model_ids.get(self.current_model_idx) {
-                        let current_chunk_idx = self.current_chunk_idx.get(&model_id).copied().unwrap_or(0);
-                        let chunks_length = self.current_message_chunks_length.get(&model_id).copied().unwrap_or(1);
-                        let current_msg_idx = self.current_message_index.get(&model_id).copied().unwrap_or(0);
-                        let total_messages = self.current_messages.get(&model_id).map(|msgs| msgs.len()).unwrap_or(0);
-                        
+                    if let Some(&model_id) = self
+                        .current_chat_profile
+                        .model_ids
+                        .get(self.current_model_idx)
+                    {
+                        let current_chunk_idx =
+                            self.current_chunk_idx.get(&model_id).copied().unwrap_or(0);
+                        let chunks_length = self
+                            .current_message_chunks_length
+                            .get(&model_id)
+                            .copied()
+                            .unwrap_or(1);
+                        let current_msg_idx = self
+                            .current_message_index
+                            .get(&model_id)
+                            .copied()
+                            .unwrap_or(0);
+                        let total_messages = self
+                            .current_messages
+                            .get(&model_id)
+                            .map(|msgs| msgs.len())
+                            .unwrap_or(0);
+
                         // Try to increment chunk_idx first
                         if current_chunk_idx + 1 < chunks_length {
-                            self.current_chunk_idx.insert(model_id, current_chunk_idx + 1);
+                            self.current_chunk_idx
+                                .insert(model_id, current_chunk_idx + 1);
                         } else if current_msg_idx + 1 < total_messages {
                             // At last chunk, move to next message
-                            self.current_message_index.insert(model_id, current_msg_idx + 1);
+                            self.current_message_index
+                                .insert(model_id, current_msg_idx + 1);
                             self.current_chunk_idx.insert(model_id, 0);
                         }
 
@@ -464,20 +492,31 @@ impl App {
                 }
                 KeyCode::Char('k') => {
                     // Navigate up through message chunks
-                    if let Some(&model_id) = self.current_chat_profile.model_ids.get(self.current_model_idx) {
-                        let current_chunk_idx = self.current_chunk_idx.get(&model_id).copied().unwrap_or(0);
-                        let current_msg_idx = self.current_message_index.get(&model_id).copied().unwrap_or(0);
-                        
+                    if let Some(&model_id) = self
+                        .current_chat_profile
+                        .model_ids
+                        .get(self.current_model_idx)
+                    {
+                        let current_chunk_idx =
+                            self.current_chunk_idx.get(&model_id).copied().unwrap_or(0);
+                        let current_msg_idx = self
+                            .current_message_index
+                            .get(&model_id)
+                            .copied()
+                            .unwrap_or(0);
+
                         if current_chunk_idx > 0 {
                             // Move to previous chunk in same message
-                            self.current_chunk_idx.insert(model_id, current_chunk_idx - 1);
+                            self.current_chunk_idx
+                                .insert(model_id, current_chunk_idx - 1);
                         } else if current_msg_idx > 0 {
                             // At first chunk, move to previous message (render will set chunk to last)
-                            self.current_message_index.insert(model_id, current_msg_idx - 1);
+                            self.current_message_index
+                                .insert(model_id, current_msg_idx - 1);
                             // Set to large number; render will clamp to last chunk of previous message
                             self.current_chunk_idx.insert(model_id, usize::MAX);
                         }
-                        
+
                         self.chat_item_selections.get_mut(&model_id).map(|x| {
                             *x = None;
                         });
@@ -491,6 +530,46 @@ impl App {
                     return Ok(());
                 }
                 _ => {}
+            }
+        }
+
+        // selected message yanking support
+        // currently we yank the entire message, not just the selected chunk
+        // copying "too much" in some scenarios seems preferable to making the user have to yank multiple chunks
+        // in other scenarios
+        if let Some(selection_idx_opt) = self
+            .chat_item_selections
+            .get_mut(&self.current_chat_profile.model_ids[self.current_model_idx])
+        {
+            if let Some(selection_idx) = selection_idx_opt {
+                match key.code {
+                    KeyCode::Char('y') => {
+                        let messages = self
+                            .current_messages
+                            .get(&self.current_chat_profile.model_ids[self.current_model_idx]);
+                        let message = messages
+                            .and_then(|messages| messages.get(*selection_idx as usize))
+                            .and_then(|message| message.content.clone())
+                            .unwrap_or_default();
+                        
+                        // Copy message content to clipboard
+                        if !message.is_empty() {
+                            match ClipboardContext::new() {
+                                Ok(mut ctx) => {
+                                    if let Err(e) = ctx.set_contents(message) {
+                                        error!("Failed to copy to clipboard: {}", e);
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Failed to create clipboard context: {}", e);
+                                }
+                            }
+                        }
+
+                        *selection_idx_opt = None;
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -545,7 +624,11 @@ impl App {
                 code: KeyCode::Char(']'),
                 ..
             } => {
-                if let Some(&model_id) = self.current_chat_profile.model_ids.get(self.current_model_idx) {
+                if let Some(&model_id) = self
+                    .current_chat_profile
+                    .model_ids
+                    .get(self.current_model_idx)
+                {
                     self.chat_item_selections.get_mut(&model_id).map(|x| {
                         *x = Some(x.map(|x| x + 1).unwrap_or(0));
                     });
@@ -556,7 +639,11 @@ impl App {
                 code: KeyCode::Char('['),
                 ..
             } => {
-                if let Some(&model_id) = self.current_chat_profile.model_ids.get(self.current_model_idx) {
+                if let Some(&model_id) = self
+                    .current_chat_profile
+                    .model_ids
+                    .get(self.current_model_idx)
+                {
                     self.chat_item_selections.get_mut(&model_id).map(|x| {
                         *x = Some(x.map(|x| x - 1).unwrap_or(-1));
                     });
@@ -583,7 +670,8 @@ impl App {
             } => {
                 // Move to next model
                 if !self.current_chat_profile.model_ids.is_empty() {
-                    self.current_model_idx = (self.current_model_idx + 1) % self.current_chat_profile.model_ids.len();
+                    self.current_model_idx =
+                        (self.current_model_idx + 1) % self.current_chat_profile.model_ids.len();
                 }
                 self.numeric_prefix = None;
             }
@@ -629,14 +717,16 @@ impl App {
                 self.numeric_prefix = None;
             }
             KeyEvent {
-                code: KeyCode::Esc,
-                ..
+                code: KeyCode::Esc, ..
             } => {
                 // TODO do we really want to allow the user to prompt while viewing search results?
                 if !self.search_query.is_empty() {
                     self.numeric_prefix = None;
                     self.clear_search_filter().await?;
-                } else if let Some(model_id) = self.chat_item_selections.get_mut(&self.current_chat_profile.model_ids[self.current_model_idx]) {
+                } else if let Some(model_id) = self
+                    .chat_item_selections
+                    .get_mut(&self.current_chat_profile.model_ids[self.current_model_idx])
+                {
                     *model_id = None;
                 } else {
                     let mut event_handler = EditorEventHandler::default();
@@ -675,7 +765,9 @@ impl App {
                 self.search_textarea = EditorState::default();
                 self.chat_history = self.database.get_all_chats().await?;
                 // Adjust index if needed
-                if self.chat_history_index >= self.chat_history.len() && !self.chat_history.is_empty() {
+                if self.chat_history_index >= self.chat_history.len()
+                    && !self.chat_history.is_empty()
+                {
                     self.chat_history_index = self.chat_history.len() - 1;
                 }
             }
@@ -687,21 +779,21 @@ impl App {
                 // Pass all other events to the search editor
                 let mut event_handler = EditorEventHandler::default();
                 event_handler.on_key_event(key, &mut self.search_textarea);
-                
+
                 // Update search query and perform search
                 let new_query = editor_state_to_string(&self.search_textarea);
                 self.search_query = new_query.clone();
-                
+
                 // Perform the search and update chat_history
                 if self.search_query.is_empty() {
                     self.chat_history = self.database.get_all_chats().await?;
                 } else {
                     self.chat_history = self.database.search_all(&self.search_query, 1000).await?;
                 }
-                
+
                 // Reset chat history index to the first result
                 self.chat_history_index = 0;
-                
+
                 // Load the first search result if available
                 if !self.chat_history.is_empty() {
                     self.load_selected_chat().await?;
@@ -714,7 +806,7 @@ impl App {
     async fn handle_model_selection_key(&mut self, key: KeyEvent) -> Result<()> {
         if let Some(modal) = &mut self.model_select_modal {
             let result = modal.handle_key(key).await?;
-            
+
             match result {
                 ModalResult::Continue => {
                     // Modal stays open, nothing to do
@@ -769,7 +861,7 @@ impl App {
         self.state = AppState::Normal;
         self.current_chat_profile = self.default_profile.clone();
         self.current_model_idx = 0;
-        
+
         // Initialize navigation state and item selections for all models in current chat profile
         self.current_message_index.clear();
         self.current_chunk_idx.clear();
@@ -781,12 +873,9 @@ impl App {
             self.current_message_chunks_length.insert(model_id, 1);
             self.chat_item_selections.insert(model_id, None);
         }
-        
+
         // this doesnt do a db insert, that wont happen until the first message is submitted
-        self.chat_history.insert(
-            0,
-            new_chat
-        );
+        self.chat_history.insert(0, new_chat);
         self.chat_history_index = 0;
         self.textarea.mode = EditorMode::Insert;
 
@@ -797,7 +886,7 @@ impl App {
         if let Some(chat) = self.chat_history.get(self.chat_history_index) {
             self.current_chat = chat.clone();
             self.current_messages.clear();
-            
+
             if chat.id != 0 {
                 // these can be done concurrently, but does this actually provide a speedup?
                 let (model_ids, tool_ids) = tokio::join!(
@@ -837,7 +926,7 @@ impl App {
             }
 
             self.current_model_idx = 0;
-            
+
             // Initialize navigation state and item selections for all models in current chat profile
             self.current_message_index.clear();
             self.current_chunk_idx.clear();
@@ -868,18 +957,20 @@ impl App {
             self.current_chat.id = chat_id;
             // we also need to update the element in chat history
             self.chat_history[self.chat_history_index].id = chat_id;
-            
+
             // we also need to write the chat profile stuff. There is probably no value in doing these concurrently
             // maybe get rid of that at some point
             let (model_res, tool_res) = tokio::join!(
-                self.database.set_chat_models(chat_id, self.current_chat_profile.model_ids.clone()),
-                self.database.set_chat_tools(chat_id, self.current_chat_profile.tool_ids.clone())
+                self.database
+                    .set_chat_models(chat_id, self.current_chat_profile.model_ids.clone()),
+                self.database
+                    .set_chat_tools(chat_id, self.current_chat_profile.tool_ids.clone())
             );
-            
+
             for model in self.current_chat_profile.model_ids.iter() {
                 self.current_messages.insert(*model, Vec::new());
             }
-            
+
             model_res?;
             tool_res?;
 
@@ -889,7 +980,7 @@ impl App {
         let mut message = ChatMessage::new_user_message(chat_id, content.clone());
         // write the user message to the database here because we only need to do this once
         let message_id = self.database.add_chat_message(&message).await?;
-        
+
         // Update the message with the actual ID from the database
         message.id = message_id;
 
@@ -949,25 +1040,27 @@ impl App {
                         .or_insert_with(Vec::new) // TODO this should never be necessary
                         .push(result);
                 }
-            },
-            InferenceEvent::TitleInferenceComplete {
-                chat_id,
-                title,
-            } => {
-                info!("Title inference completed for chat id: {}, title: {}", chat_id, title);
+            }
+            InferenceEvent::TitleInferenceComplete { chat_id, title } => {
+                info!(
+                    "Title inference completed for chat id: {}, title: {}",
+                    chat_id, title
+                );
                 // TODO make this more efficient
                 for chat in &mut self.chat_history {
                     if chat.id == chat_id {
                         if chat.title.is_none() {
                             info!("updating chat title...");
                             self.database.update_chat_title(chat_id, &title).await?;
-                            self.title_inference_in_progress_by_chat
-                                .remove(&chat_id);
+                            self.title_inference_in_progress_by_chat.remove(&chat_id);
                             info!("title updated.");
                             chat.title = Some(title.clone());
                             self.current_chat.title = Some(title);
                         } else {
-                            info!("Title inference completed for chat id: {}, but title appears to have been set by the user", chat_id);
+                            info!(
+                                "Title inference completed for chat id: {}, but title appears to have been set by the user",
+                                chat_id
+                            );
                         }
                         break;
                     }
@@ -999,7 +1092,10 @@ impl App {
         new_prompt: String,
         generate_title: bool,
     ) {
-        info!("Spawning inference task for model id: {}, generate_title: {}", model_id, generate_title);
+        info!(
+            "Spawning inference task for model id: {}, generate_title: {}",
+            model_id, generate_title
+        );
         let tx = self.user_event_tx.clone();
 
         // if there's an existing handle for this chat/model combo, we need to wait for that to complete first
@@ -1049,10 +1145,9 @@ impl App {
 
         self.inference_in_progress_by_message_and_model
             .insert((message_id, model_id));
-        
+
         if generate_title {
-            self.title_inference_in_progress_by_chat
-                .insert(chat_id);
+            self.title_inference_in_progress_by_chat.insert(chat_id);
         }
         // Spawn the inference task
         let handle = tokio::spawn(async move {
@@ -1097,7 +1192,11 @@ impl App {
                 }
                 Err(error) => {
                     error!("Inference failed: {}", error);
-                    ChatMessage::new_assistant_message_with_error(chat_id, model_id, error.to_string())
+                    ChatMessage::new_assistant_message_with_error(
+                        chat_id,
+                        model_id,
+                        error.to_string(),
+                    )
                 }
             };
 
@@ -1136,20 +1235,17 @@ impl App {
                         .map_err(|e| anyhow::anyhow!("Inference failed: {}", e));
 
                     info!("Title inference task completed for model id: {}", model_id);
-                    // we don't do the db write here because 
+                    // we don't do the db write here because
                     // we want to wait until the last possible moment to make
                     // sure the user hasn't manually set the title
                     if let Ok(title) = title_result {
-                        let _ = tx.send(InferenceEvent::TitleInferenceComplete {
-                            chat_id,
-                            title,
-                        });
+                        let _ = tx.send(InferenceEvent::TitleInferenceComplete { chat_id, title });
                     }
                 });
             }
             current_conversation
         });
-        
+
         // Store the join handle
         // There is actually a risk here. It is critical this happens before
         // The inference finishes. I don't know if there is a realistic scenario
@@ -1189,7 +1285,9 @@ impl App {
 
     async fn apply_model_selection(&mut self, selected_models: Vec<i64>) -> Result<()> {
         // Get the mode from the modal before we apply
-        let mode = self.model_select_modal.as_ref()
+        let mode = self
+            .model_select_modal
+            .as_ref()
             .map(|m| m.mode.clone())
             .unwrap_or(ModelSelectionMode::DefaultModels);
 
@@ -1201,10 +1299,12 @@ impl App {
                 }
 
                 // Set the selected models with their order preserved
-                self.database.set_chat_profile_models(0, selected_models.clone()).await?;
+                self.database
+                    .set_chat_profile_models(0, selected_models.clone())
+                    .await?;
 
                 self.default_profile.model_ids = selected_models.clone();
-                
+
                 // also set it for the current chat if there are no messages yet!
                 if self.current_messages.is_empty() {
                     self.current_chat_profile.model_ids = selected_models;
@@ -1219,7 +1319,6 @@ impl App {
 
         Ok(())
     }
-
 
     pub fn update_spinner(&mut self) {
         let now = Instant::now();
@@ -1236,25 +1335,25 @@ impl App {
 
     async fn delete_current_chat(&mut self) -> Result<()> {
         let chat_id = self.current_chat.id;
-        
+
         // Delete the chat from the database
         self.database.delete_chat(chat_id).await?;
-        
+
         // Remove the chat from the history
         self.chat_history.retain(|chat| chat.id != chat_id);
-        
+
         // Adjust the index if needed
         if self.chat_history_index >= self.chat_history.len() && self.chat_history_index > 0 {
             self.chat_history_index = self.chat_history.len() - 1;
         }
-        
+
         // Load the new current chat or create a new one if history is empty
         if self.chat_history.is_empty() {
             self.create_new_chat().await?;
         } else {
             self.load_selected_chat().await?;
         }
-        
+
         Ok(())
     }
 
@@ -1273,14 +1372,18 @@ impl App {
                 self.state = AppState::Normal;
             }
             KeyCode::Enter => {
-                let new_title = editor_state_to_string(&self.title_textarea).trim().to_string();
+                let new_title = editor_state_to_string(&self.title_textarea)
+                    .trim()
+                    .to_string();
                 if !new_title.is_empty() {
                     // Update the title in the database
-                    self.database.update_chat_title(self.current_chat.id, &new_title).await?;
-                    
+                    self.database
+                        .update_chat_title(self.current_chat.id, &new_title)
+                        .await?;
+
                     // Update the in-memory chat title
                     self.current_chat.title = Some(new_title.clone());
-                    
+
                     // Update the chat history
                     if let Some(chat) = self.chat_history.get_mut(self.chat_history_index) {
                         chat.title = Some(new_title);
@@ -1299,14 +1402,14 @@ impl App {
     async fn clear_search_filter(&mut self) -> Result<()> {
         // Remember the currently selected chat ID
         let selected_chat_id = self.chat_history.get(self.chat_history_index).map(|c| c.id);
-        
+
         // Clear the search query and textarea
         self.search_query.clear();
         self.search_textarea = EditorState::default();
-        
+
         // Reload all chats
         self.chat_history = self.database.get_all_chats().await?;
-        
+
         // Find and restore the selected chat
         if let Some(chat_id) = selected_chat_id {
             if let Some(pos) = self.chat_history.iter().position(|c| c.id == chat_id) {
@@ -1318,7 +1421,7 @@ impl App {
         } else {
             self.chat_history_index = 0;
         }
-        
+
         Ok(())
     }
 }
