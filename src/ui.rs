@@ -200,20 +200,25 @@ fn render_chat_history(f: &mut Frame, app: &App, area: Rect) {
         .iter()
         .enumerate()
         .map(|(i, chat)| {
-            let title = chat.title.clone().unwrap_or_else(|| "New Chat".to_string());
-
-            let base_style = if i == app.chat_history_index {
-                Style::default()
-                    .add_modifier(Modifier::BOLD)
+            let line = if app.title_inference_in_progress_by_chat.contains(&chat.id) {
+                // show a spinner if the title inference is in progress
+                let mut line = Line::from(app.get_spinner_char().to_string());
+                line.alignment = Some(Alignment::Center);
+                line
             } else {
-                Style::default()
-            };
-
-            // Highlight search terms if we're searching
-            let line = if !app.search_query.is_empty() {
-                highlight_text(&title, &app.search_query, base_style)
-            } else {
-                Line::from(Span::styled(title, base_style))
+             let title=   chat.title.clone().unwrap_or_else(|| "New Chat".to_string());
+                // Highlight search terms if we're searching
+                let base_style = if i == app.chat_history_index {
+                    Style::default()
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+                if !app.search_query.is_empty() {
+                    highlight_text(&title, &app.search_query, base_style)
+                } else {
+                    Line::from(Span::styled(title, base_style))
+                }
             };
 
             ListItem::new(line)
@@ -305,15 +310,24 @@ fn render_chat_title(f: &mut Frame, app: &App, area: Rect) {
         ])
         .split(area);
 
+    let title_paragraph = if app.title_inference_in_progress_by_chat.contains(&app.current_chat.id) {
+        let spinner_char = format!("    {}", app.get_spinner_char());
+        let loading_line = Line::from(spinner_char);
+        let loading_text = Text::from(vec![loading_line]);
+        Paragraph::new(loading_text)
+            .block(Block::default().borders(Borders::LEFT | Borders::TOP | Borders::BOTTOM))
+            .alignment(Alignment::Left)
+    } else {
+        Paragraph::new(
+            app.current_chat
+                .title
+                .clone()
+                .unwrap_or("New Chat".to_string()),
+        )
+        .block(Block::default().borders(Borders::LEFT | Borders::TOP | Borders::BOTTOM))
+        .alignment(Alignment::Left)
+    };
     // Render main title (left-aligned in left area)
-    let title_paragraph = Paragraph::new(
-        app.current_chat
-            .title
-            .clone()
-            .unwrap_or("New Chat".to_string()),
-    )
-    .block(Block::default().borders(Borders::LEFT | Borders::TOP | Borders::BOTTOM))
-    .alignment(Alignment::Left);
     f.render_widget(title_paragraph, title_layout[0]);
 
     // Get current model info for right-aligned text

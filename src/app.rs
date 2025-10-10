@@ -96,7 +96,7 @@ pub struct App {
     pub search_query: String,
     pub should_quit: bool,
     pub user_event_tx: mpsc::UnboundedSender<InferenceEvent>,
-    pub title_inference_in_progress_by_chat: HashSet<i64>, // chat_id -> handle
+    pub title_inference_in_progress_by_chat: HashSet<i64>,
     pub inference_in_progress_by_message_and_model: HashSet<(i64, i64)>, // message and model id -> handle
     pub inference_handles_by_chat_and_model: HashMap<(i64, i64), JoinHandle<Vec<ChatMessage>>>, // chat and model id -> handle
     pub provider_clients: HashMap<i64, Arc<dyn ProviderClient>>, // provider_id -> provider client
@@ -961,6 +961,8 @@ impl App {
                         if chat.title.is_none() {
                             info!("updating chat title...");
                             self.database.update_chat_title(chat_id, &title).await?;
+                            self.title_inference_in_progress_by_chat
+                                .remove(&chat_id);
                             info!("title updated.");
                             chat.title = Some(title.clone());
                             self.current_chat.title = Some(title);
@@ -1047,6 +1049,11 @@ impl App {
 
         self.inference_in_progress_by_message_and_model
             .insert((message_id, model_id));
+        
+        if generate_title {
+            self.title_inference_in_progress_by_chat
+                .insert(chat_id);
+        }
         // Spawn the inference task
         let handle = tokio::spawn(async move {
             // Wait for all existing tasks for this model to complete
