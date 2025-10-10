@@ -14,24 +14,18 @@ CREATE VIRTUAL TABLE IF NOT EXISTS chat_message_fts USING fts5(
     content_rowid='id'
 );
 
--- Populate the FTS tables with existing data
-INSERT INTO chat_fts(rowid, title)
-SELECT id, title FROM chat WHERE title IS NOT NULL;
-
-INSERT INTO chat_message_fts(rowid, content)
-SELECT id, content FROM chat_message WHERE content IS NOT NULL;
-
 -- Triggers to keep chat_fts in sync
 CREATE TRIGGER IF NOT EXISTS chat_ai AFTER INSERT ON chat BEGIN
   INSERT INTO chat_fts(rowid, title) VALUES (new.id, new.title);
 END;
 
 CREATE TRIGGER IF NOT EXISTS chat_ad AFTER DELETE ON chat BEGIN
-  DELETE FROM chat_fts WHERE rowid = old.id;
+  INSERT INTO chat_fts(chat_fts, rowid, title) VALUES('delete', old.id, old.title);
 END;
 
 CREATE TRIGGER IF NOT EXISTS chat_au AFTER UPDATE ON chat BEGIN
-  UPDATE chat_fts SET title = new.title WHERE rowid = old.id;
+  INSERT INTO chat_fts(chat_fts, rowid, title) VALUES('delete', old.id, old.title);
+  INSERT INTO chat_fts(rowid, title) VALUES (new.id, new.title);
 END;
 
 -- Triggers to keep chat_message_fts in sync
@@ -40,10 +34,11 @@ CREATE TRIGGER IF NOT EXISTS chat_message_ai AFTER INSERT ON chat_message BEGIN
 END;
 
 CREATE TRIGGER IF NOT EXISTS chat_message_ad AFTER DELETE ON chat_message BEGIN
-  DELETE FROM chat_message_fts WHERE rowid = old.id;
+  INSERT INTO chat_message_fts(chat_message_fts, rowid, content) VALUES('delete', old.id, old.content);
 END;
 
 CREATE TRIGGER IF NOT EXISTS chat_message_au AFTER UPDATE ON chat_message BEGIN
-  UPDATE chat_message_fts SET content = new.content WHERE rowid = old.id;
+  INSERT INTO chat_message_fts(chat_message_fts, rowid, content) VALUES('delete', old.id, old.content);
+  INSERT INTO chat_message_fts(rowid, content) VALUES (new.id, new.content);
 END;
 
