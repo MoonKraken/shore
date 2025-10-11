@@ -3,7 +3,8 @@ CREATE TABLE IF NOT EXISTS chat_message (
     id INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
     chat_id INTEGER NOT NULL,
     dt INTEGER NOT NULL,
-    chat_role TEXT NOT NULL,
+    response_dt INTEGER, -- only relevant for tool calls and assistant messages
+    chat_role INTEGER NOT NULL CHECK(chat_role IN (1, 2, 3)),
     content TEXT,
     reasoning_content TEXT,
     tool_calls TEXT,

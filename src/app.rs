@@ -68,7 +68,7 @@ pub enum InferenceEvent {
     InferenceComplete {
         chat_id: i64,
         model_id: i64,
-        message_id: i64,
+        origin_message_id: i64,
         result: ChatMessage,
     },
     TitleInferenceComplete {
@@ -551,7 +551,7 @@ impl App {
                             .and_then(|messages| messages.get(*selection_idx as usize))
                             .and_then(|message| message.content.clone())
                             .unwrap_or_default();
-                        
+
                         // Copy message content to clipboard
                         if !message.is_empty() {
                             match ClipboardContext::new() {
@@ -978,14 +978,14 @@ impl App {
             (chat_id, true)
         };
 
-        let mut message = ChatMessage::new_user_message(chat_id, content.clone());
+        let mut user_message = ChatMessage::new_user_message(chat_id, content.clone());
         // write the user message to the database here because we only need to do this once
-        let message_id = self.database.add_chat_message(&message).await?;
+        let user_message_id = self.database.add_chat_message(&user_message).await?;
 
         // Update the message with the actual ID from the database
-        message.id = message_id;
+        user_message.id = user_message_id;
 
-        let message_2 = message.clone();
+        let message_2 = user_message.clone();
         self.current_messages
             .iter_mut()
             .for_each(|(model_id, messages)| {
@@ -1003,7 +1003,8 @@ impl App {
             info!("Spawning inference task for model id: {}", model_id);
             self.spawn_inference_task(
                 model_id.clone(),
-                message_id,
+                user_message_id,
+                user_message.dt,
                 chat_id,
                 messages.clone(),
                 content.clone(),
@@ -1024,22 +1025,38 @@ impl App {
             InferenceEvent::InferenceComplete {
                 chat_id,
                 model_id,
-                message_id,
+                origin_message_id,
                 result,
             } => {
                 // Remove the completed join handle
                 self.inference_in_progress_by_message_and_model
-                    .remove(&(message_id, model_id));
-                self.inference_handles_by_chat_and_model
-                    .remove(&(chat_id, model_id));
-
+                    .remove(&(origin_message_id, model_id));
+                
                 // This serves only to update the messages in memory for the current chat
                 // The DB writes were already done by the tokio task that did the infernece
                 if chat_id == self.current_chat.id {
-                    self.current_messages
+                    // new inferences may have been kicked off since this one was
+                    // so we need to make sure to insert it in the right place
+                    let messages = self
+                        .current_messages
                         .entry(model_id)
-                        .or_insert_with(Vec::new) // TODO this should never be necessary
-                        .push(result);
+                        .or_insert_with(Vec::new); // this should never be necesary
+
+                    // this is O(n) so we are banking on chats being relatively small.
+                    // with chats less than 100 messages, it is probably faster than a map lookup approach
+                    // revisit this if it becomes common for chats to be large
+                    let insert_idx = messages
+                        .iter()
+                        .position(|message| message.id == origin_message_id);
+                        
+                    let insert_idx = if let Some(insert_idx) = insert_idx {
+                        insert_idx + 1
+                    } else {
+                        error!("Origin message id not found in current messages, this should not happen");
+                        messages.len()
+                    };
+
+                    messages.insert(insert_idx, result);
                 }
             }
             InferenceEvent::TitleInferenceComplete { chat_id, title } => {
@@ -1087,7 +1104,8 @@ impl App {
     pub async fn spawn_inference_task(
         &mut self,
         model_id: i64,
-        message_id: i64,
+        user_message_id: i64,
+        user_message_dt: i64,
         chat_id: i64,
         prior_conversation: Vec<ChatMessage>,
         new_prompt: String,
@@ -1117,6 +1135,7 @@ impl App {
                     chat_id,
                     model_id,
                     format!("Model id {} not found", model_id),
+                    user_message_dt,
                 );
                 if let Err(e) = self.database.add_chat_message(&msg).await {
                     error!("Error writing message to database: {}", e);
@@ -1134,6 +1153,7 @@ impl App {
                     chat_id,
                     model_id,
                     format!("Provider for model id {} not found", model_id),
+                    user_message_dt,
                 );
                 if let Err(e) = self.database.add_chat_message(&msg).await {
                     error!("Error writing message to database: {}", e);
@@ -1145,7 +1165,7 @@ impl App {
         let database = self.database.clone();
 
         self.inference_in_progress_by_message_and_model
-            .insert((message_id, model_id));
+            .insert((user_message_id, model_id));
 
         if generate_title {
             self.title_inference_in_progress_by_chat.insert(chat_id);
@@ -1188,15 +1208,19 @@ impl App {
                 .map_err(|e| anyhow::anyhow!("Inference failed: {}", e));
 
             let new_assistant_message = match &result {
-                Ok(result_content) => {
-                    ChatMessage::new_assistant_message(chat_id, model_id, result_content.clone())
-                }
+                Ok(result_content) => ChatMessage::new_assistant_message(
+                    chat_id,
+                    model_id,
+                    result_content.clone(),
+                    user_message_dt,
+                ),
                 Err(error) => {
                     error!("Inference failed: {}", error);
                     ChatMessage::new_assistant_message_with_error(
                         chat_id,
                         model_id,
                         error.to_string(),
+                        user_message_dt,
                     )
                 }
             };
@@ -1204,11 +1228,11 @@ impl App {
             let _ = tx.send(InferenceEvent::InferenceComplete {
                 chat_id,
                 model_id,
-                message_id,
+                origin_message_id: user_message_id,
                 result: new_assistant_message.clone(), // possible skill issue clone
             });
 
-            // but we still need to write the assistant message to the database
+            // now write the assistant message to the database
             if let Err(e) = database.add_chat_message(&new_assistant_message).await {
                 info!("Couldn't write chat message to database: {}", e);
             }

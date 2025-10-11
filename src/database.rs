@@ -65,7 +65,7 @@ impl Database {
     #[instrument(level = "info", skip(self))]
     pub async fn get_chat_messages(&self, chat_id: i64) -> Result<Vec<ChatMessage>> {
         let messages = sqlx::query_as::<_, ChatMessage>(
-            "SELECT id, chat_id, dt, model_id, chat_role, content, reasoning_content, tool_calls, tool_call_id, name, error FROM chat_message WHERE chat_id = ? ORDER BY dt ASC"
+            "SELECT id, chat_id, dt, response_dt, model_id, chat_role, content, reasoning_content, tool_calls, tool_call_id, name, error FROM chat_message WHERE chat_id = ? ORDER BY dt, chat_role"
         )
         .bind(chat_id)
         .fetch_all(&self.pool)
@@ -77,10 +77,11 @@ impl Database {
     #[instrument(level = "info", skip(self, message), fields(chat_id = message.chat_id, role = %message.chat_role))]
     pub async fn add_chat_message(&self, message: &ChatMessage) -> Result<i64> {
         let result = sqlx::query(
-            "INSERT INTO chat_message (chat_id, dt, model_id, chat_role, content, reasoning_content, tool_calls, tool_call_id, name, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id"
+            "INSERT INTO chat_message (chat_id, dt, response_dt, model_id, chat_role, content, reasoning_content, tool_calls, tool_call_id, name, error) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id"
         )
         .bind(message.chat_id)
         .bind(message.dt)
+        .bind(message.response_dt)
         .bind(message.model_id)
         .bind(&message.chat_role)
         .bind(&message.content)
@@ -93,17 +94,6 @@ impl Database {
         .await?;
 
         Ok(result.get(0))
-    }
-
-    pub async fn get_chat_message(&self, message_id: i64) -> Result<ChatMessage> {
-        let message = sqlx::query_as::<_, ChatMessage>(
-            "SELECT id, chat_id, dt, model_id, chat_role, content, reasoning_content, tool_calls, tool_call_id, name, error FROM chat_message WHERE id = ?"
-        )
-        .bind(message_id)
-        .fetch_one(&self.pool)
-        .await?;
-
-        Ok(message)
     }
 
     #[instrument(level = "info", skip(self))]

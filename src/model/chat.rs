@@ -1,16 +1,50 @@
 use chrono;
 use serde::{Deserialize, Serialize};
-use sqlx::{prelude::Type, FromRow};
+use sqlx::{prelude::FromRow, encode::IsNull, error::BoxDynError, Database, Decode, Encode, Sqlite, Type};
 use std::fmt;
 
 use crate::model::model::Model;
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Type)]
-#[sqlx(type_name = "chat_role_type", rename_all = "snake_case")]
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(i64)]
 pub enum ChatRole {
-    User,
-    Assistant,
-    ToolResult,
+    User = 1,
+    Assistant = 2,
+    ToolResult = 3,
+}
+
+impl ChatRole {
+    pub fn from_i64(value: i64) -> Result<Self, String> {
+        match value {
+            1 => Ok(ChatRole::User),
+            2 => Ok(ChatRole::Assistant),
+            3 => Ok(ChatRole::ToolResult),
+            _ => Err(format!("Invalid ChatRole value: {}", value)),
+        }
+    }
+    
+    pub fn to_i64(self) -> i64 {
+        self as i64
+    }
+}
+
+impl Type<Sqlite> for ChatRole {
+    fn type_info() -> <Sqlite as Database>::TypeInfo {
+        <i64 as Type<Sqlite>>::type_info()
+    }
+}
+
+impl<'r> Decode<'r, Sqlite> for ChatRole {
+    fn decode(value: <Sqlite as Database>::ValueRef<'r>) -> Result<Self, BoxDynError> {
+        let value = <i64 as Decode<Sqlite>>::decode(value)?;
+        ChatRole::from_i64(value).map_err(Into::into)
+    }
+}
+
+impl<'q> Encode<'q, Sqlite> for ChatRole {
+    fn encode_by_ref(&self, args: &mut Vec<sqlx::sqlite::SqliteArgumentValue<'q>>) -> Result<IsNull, BoxDynError> {
+        <i64 as Encode<Sqlite>>::encode_by_ref(&self.to_i64(), args)
+    }
 }
 
 impl fmt::Display for ChatRole {
@@ -34,6 +68,7 @@ pub struct Chat {
 pub struct ChatMessage {
     pub id: i64,
     pub dt: i64, // these dts are unique in that they are in milliseconds, because seconds were not granular enough for proper ordering
+    pub response_dt: Option<i64>, // response_dt is only relevant for tool calls and assistant messages
     pub chat_id: i64,
     pub model_id: Option<i64>, // only populated for assistant messages
     pub chat_role: ChatRole,
@@ -63,6 +98,7 @@ impl ChatMessage {
         Self {
             id: 0, // Will be set by database
             dt: chrono::Utc::now().timestamp_millis(),
+            response_dt: None,
             chat_id,
             model_id: None,
             chat_role: ChatRole::User,
@@ -75,10 +111,11 @@ impl ChatMessage {
         }
     }
 
-    pub fn new_assistant_message(chat_id: i64, model_id: i64, content: String) -> Self {
+    pub fn new_assistant_message(chat_id: i64, model_id: i64, content: String, user_message_dt: i64) -> Self {
         Self {
             id: 0, // Will be set by database
-            dt: chrono::Utc::now().timestamp_millis(),
+            dt: user_message_dt,
+            response_dt: Some(chrono::Utc::now().timestamp_millis()),
             chat_id,
             model_id: Some(model_id),
             chat_role: ChatRole::Assistant,
@@ -91,10 +128,11 @@ impl ChatMessage {
         }
     }
 
-    pub fn new_assistant_message_with_error(chat_id: i64, model_id: i64, error: String) -> Self {
+    pub fn new_assistant_message_with_error(chat_id: i64, model_id: i64, error: String, user_message_dt: i64) -> Self {
         Self {
             id: 0, // Will be set by database
-            dt: chrono::Utc::now().timestamp_millis(),
+            dt: user_message_dt,
+            response_dt: Some(chrono::Utc::now().timestamp_millis()),
             chat_id,
             model_id: Some(model_id),
             chat_role: ChatRole::Assistant,
