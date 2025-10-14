@@ -61,6 +61,7 @@ pub enum AppState {
     ProviderDialog,
     DeleteConfirmation,
     TitleEdit,
+    UnavailableModelsError,
 }
 
 #[derive(Debug)]
@@ -108,6 +109,7 @@ pub struct App {
     pub provider_api_keys_set: HashMap<i64, bool>,               // provider_id -> api key set
     pub cached_provider_data: Vec<(String, String, bool)>,       // (name, env_var, is_set)
     pub available_models: HashMap<i64, Model>,                   // model_id -> model
+    pub all_models: HashMap<i64, Model>,
     pub provider_names: HashMap<i64, String>,                    // provider_id -> provider name
     // Model selection dialog state
     pub model_select_modal: Option<ModelSelectModal>,
@@ -116,6 +118,10 @@ pub struct App {
     pub last_spinner_update: Instant,
     // Vim-style numeric prefix for navigation
     pub numeric_prefix: Option<usize>,
+    // Unavailable models error state
+    pub unavailable_models_info: Vec<(String, String)>, // (model_name, provider_name)
+    // Track last key press for double-tap detection (e.g., 'cc' to clear)
+    pub last_key_press: Option<(KeyCode, Instant)>,
 }
 
 /// Find the first viable model for the default chat profile
@@ -177,11 +183,15 @@ impl App {
         }
 
         // Load all available models into HashMap
-        let all_models = database.get_all_models().await?;
+        let models = database.get_all_models().await?;
         let mut available_models = HashMap::new();
-        for model in all_models {
+        let mut all_models = HashMap::new();
+        for model in models {
             info!("Model {}: {}", model.id, model.model);
-            available_models.insert(model.id, model);
+            all_models.insert(model.id, model.clone());
+            if *provider_api_keys_set.get(&model.provider_id).unwrap_or(&false) {
+                available_models.insert(model.id, model);
+            }
         }
 
         // Check if default chat profile (ID 1) exists and create it if necessary
@@ -203,7 +213,7 @@ impl App {
             let default_models = default_profile.model_ids.clone();
             let mut models_retained = 0;
             for model_id in default_models {
-                if !provider_api_keys_set.get(&model_id).unwrap_or(&false) {
+                if !available_models.contains_key(&model_id){
                     database.remove_chat_profile_model(0, model_id).await?;
                 } else {
                     models_retained += 1;
@@ -273,12 +283,15 @@ impl App {
             provider_api_keys_set,
             cached_provider_data,
             available_models,
+            all_models,
             provider_names,
             model_select_modal: None,
             spinner_frame: 0,
             last_spinner_update: Instant::now(),
             numeric_prefix: None,
             current_selected_message_index: None,
+            unavailable_models_info: Vec::new(),
+            last_key_press: None,
         };
 
         // this feels a little wrong as it guarantees that we're going to
@@ -372,6 +385,7 @@ impl App {
             AppState::ProviderDialog => self.handle_provider_dialog_key(key).await?,
             AppState::DeleteConfirmation => self.handle_delete_confirmation_key(key).await?,
             AppState::TitleEdit => self.handle_title_edit_key(key).await?,
+            AppState::UnavailableModelsError => self.handle_unavailable_models_error_key(key).await?,
         }
 
         Ok(())
@@ -409,6 +423,48 @@ impl App {
                 self.numeric_prefix = None;
             }
             _ => {}
+        }
+
+        // Check for 'cc' double-tap to clear textarea and enter insert mode (vim-like behavior)
+        // Check for 'dd' double-tap to clear textarea without entering insert mode
+        if (key.code == KeyCode::Char('c') || key.code == KeyCode::Char('d'))
+            && self.textarea.mode != EditorMode::Insert
+            && self.search_textarea.mode != EditorMode::Insert
+        {
+            let current_char = match key.code {
+                KeyCode::Char(c) => c,
+                _ => unreachable!(),
+            };
+            
+            let is_double_press = if let Some((last_code, _last_time)) = self.last_key_press {
+                if let KeyCode::Char(c) = last_code {
+                    c == current_char
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if is_double_press {
+                // Clear the textarea
+                self.textarea = EditorState::default();
+                
+                // For 'cc', enter insert mode; for 'dd', stay in normal mode
+                if current_char == 'c' {
+                    self.textarea.mode = EditorMode::Insert;
+                }
+                
+                self.last_key_press = None;
+                self.numeric_prefix = None;
+                return Ok(());
+            } else {
+                // Record this press for potential double-tap
+                self.last_key_press = Some((key.code, Instant::now()));
+            }
+        } else if !matches!(key.code, KeyCode::Char('c') | KeyCode::Char('d')) {
+            // Reset last key press if it's not 'c' or 'd'
+            self.last_key_press = None;
         }
 
         // if the prompt editor is in insert mode, all events go to the prompt editor
@@ -992,6 +1048,33 @@ impl App {
             return Ok(());
         }
 
+        // Check if all models in the chat profile are available
+        let mut unavailable_models = Vec::new();
+        for &model_id in &self.current_chat_profile.model_ids {
+            if !self.available_models.contains_key(&model_id) {
+                // Model is not available, get model info
+                if let Some(model) = self.all_models.get(&model_id) {
+                    let provider_name = self.provider_names
+                        .get(&model.provider_id)
+                        .cloned()
+                        .unwrap_or_else(|| "Unknown Provider".to_string());
+                    unavailable_models.push((model.model.clone(), provider_name));
+                } else {
+                    unavailable_models.push((
+                        format!("Unknown Model (ID: {})", model_id),
+                        "Unknown Provider".to_string()
+                    ));
+                }
+            }
+        }
+
+        // If there are unavailable models, show error dialog
+        if !unavailable_models.is_empty() {
+            self.unavailable_models_info = unavailable_models;
+            self.state = AppState::UnavailableModelsError;
+            return Ok(());
+        }
+
         let (chat_id, generate_title) = if self.current_chat.id != 0 {
             (self.current_chat.id, false)
         } else {
@@ -1463,6 +1546,16 @@ impl App {
                 event_handler.on_key_event(key, &mut self.title_textarea);
             }
         }
+        Ok(())
+    }
+
+    async fn handle_unavailable_models_error_key(&mut self, _key: KeyEvent) -> Result<()> {
+        // Any key press dismisses the error dialog and goes back to chat history
+        self.state = AppState::Normal;
+        self.unavailable_models_info.clear();
+        
+        // Try to find a chat that has all available models
+        // If the current chat is invalid, we stay on it but the user can navigate away
         Ok(())
     }
 

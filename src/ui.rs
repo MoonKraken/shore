@@ -198,6 +198,10 @@ pub fn ui(f: &mut Frame, app: &mut App) {
     if app.state == AppState::TitleEdit {
         render_title_edit_dialog(f, app, size);
     }
+
+    if app.state == AppState::UnavailableModelsError {
+        render_unavailable_models_error_dialog(f, app, size);
+    }
 }
 
 fn render_chat_history(f: &mut Frame, app: &App, area: Rect) {
@@ -382,7 +386,7 @@ fn render_chat_title(f: &mut Frame, app: &App, area: Rect) {
         .model_ids
         .get(app.current_model_idx)
         .unwrap_or(&0);
-    let model = app.available_models.get(model_id);
+    let model = app.all_models.get(model_id);
     let model_name: &str = model.map(|m| m.model.as_str()).unwrap_or("?");
     
     let title_text = if app.title_inference_in_progress_by_chat.contains(&app.current_chat.id) {
@@ -904,6 +908,99 @@ fn render_title_edit_dialog(f: &mut Frame, app: &mut App, area: Rect) {
         .alignment(Alignment::Center);
 
     f.render_widget(instructions_paragraph, layout[1]);
+}
+
+fn render_unavailable_models_error_dialog(f: &mut Frame, app: &App, area: Rect) {
+    let popup_area = centered_rect(70, 60, area);
+    f.render_widget(Clear, popup_area);
+
+    let layout = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5), // For the error message
+            Constraint::Min(5),    // For the model list
+            Constraint::Length(3), // For instructions
+        ])
+        .split(popup_area);
+
+    // Error message
+    let error_message = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "⚠️  Cannot Continue Chat",
+            Style::default()
+                .fg(Color::Red)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from("The following models are not available because their provider API keys are not set:"),
+    ];
+
+    let message_paragraph = Paragraph::new(error_message)
+        .block(
+            Block::default()
+                .borders(Borders::TOP | Borders::LEFT | Borders::RIGHT)
+                .border_style(Style::default().fg(Color::Red)),
+        )
+        .alignment(Alignment::Center);
+
+    f.render_widget(message_paragraph, layout[0]);
+
+    // Model list with providers
+    let rows: Vec<Row> = app
+        .unavailable_models_info
+        .iter()
+        .map(|(model_name, provider_name)| {
+            Row::new(vec![
+                Cell::from(model_name.as_str()),
+                Cell::from(provider_name.as_str()),
+            ])
+        })
+        .collect();
+
+    let header = Row::new(vec![
+        Cell::from(Span::styled(
+            "Model",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+        Cell::from(Span::styled(
+            "Provider",
+            Style::default().add_modifier(Modifier::BOLD),
+        )),
+    ]);
+
+    let table = Table::new(
+        rows,
+        [Constraint::Percentage(60), Constraint::Percentage(40)],
+    )
+    .header(header)
+    .block(
+        Block::default()
+            .borders(Borders::LEFT | Borders::RIGHT)
+            .border_style(Style::default().fg(Color::Red)),
+    )
+    .column_spacing(2);
+
+    f.render_widget(table, layout[1]);
+
+    // Instructions
+    let instructions = vec![Line::from(vec![
+        Span::styled(
+            "Press any key",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" to go back"),
+    ])];
+
+    let instructions_paragraph = Paragraph::new(instructions)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Red)),
+        )
+        .alignment(Alignment::Center);
+
+    f.render_widget(instructions_paragraph, layout[2]);
 }
 
 fn centered_rect(percent_x: u16, percent_y: u16, r: Rect) -> Rect {
