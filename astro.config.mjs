@@ -4,6 +4,8 @@ import starlight from "@astrojs/starlight";
 
 // https://astro.build/config
 export default defineConfig({
+  site: "https://moonkraken.github.io",
+  base: "/shore",
   integrations: [
     starlight({
       title: "My Docs",
