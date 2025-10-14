@@ -430,6 +430,48 @@ impl App {
         // When prompt is empty, numbers do other things
         if is_prompt_empty {
             match key.code {
+                KeyCode::Char('0') => {
+                    // Select the first model
+                    if !self.current_chat_profile.model_ids.is_empty() {
+                        self.current_model_idx = 0;
+                    }
+                    self.numeric_prefix = None;
+                    return Ok(());
+                }
+                KeyCode::Char('$') => {
+                    // Select the last model
+                    if !self.current_chat_profile.model_ids.is_empty() {
+                        self.current_model_idx = self.current_chat_profile.model_ids.len() - 1;
+                    }
+                    self.numeric_prefix = None;
+                    return Ok(());
+                }
+                KeyCode::Char('*') => {
+                    // Cycle through models that don't have pending inference requests
+                    if !self.current_chat_profile.model_ids.is_empty() {
+                        let start_idx = self.current_model_idx;
+                        let num_models = self.current_chat_profile.model_ids.len();
+                        
+                        // Try to find the next model without a pending inference
+                        for i in 1..=num_models {
+                            let test_idx = (start_idx + i) % num_models;
+                            let model_id = self.current_chat_profile.model_ids[test_idx];
+                            
+                            // Check if this model has a pending inference request in the current chat
+                            let has_pending = self.inference_handles_by_chat_and_model
+                                .get(&(self.current_chat.id, model_id))
+                                .map(|handle| !handle.is_finished())
+                                .unwrap_or(false);
+                            
+                            if !has_pending {
+                                self.current_model_idx = test_idx;
+                                break;
+                            }
+                        }
+                    }
+                    self.numeric_prefix = None;
+                    return Ok(());
+                }
                 KeyCode::Char('h') => {
                     // Decrement current_model_idx
                     if self.current_model_idx > 0 {

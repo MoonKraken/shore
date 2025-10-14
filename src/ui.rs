@@ -302,16 +302,107 @@ fn highlight_text(text: &str, query: &str, base_style: Style) -> Line<'static> {
     Line::from(spans)
 }
 
+/// Build a carousel of model indices with smart windowing
+fn build_model_carousel(app: &App, available_width: usize) -> Vec<Span<'static>> {
+    let total_models = app.current_chat_profile.model_ids.len();
+    let current_idx = app.current_model_idx;
+
+    // Calculate width needed for padded indices
+    let max_idx_width = total_models.to_string().len();
+    let total_chars_without_suffix = total_models * max_idx_width + (total_models.saturating_sub(1)); // +spaces between indices
+    
+    // Determine window range
+    let (start_idx, end_idx, suffix) = if total_chars_without_suffix <= available_width {
+        // Show all indices
+        (0, total_models, String::new())
+    } else {
+        // Calculate space needed for suffix (e.g., " / 10")
+        let suffix = if total_models > 9 { format!(" / {}", total_models) } else { String::new() };
+        
+        // Space per index with padding and separator
+        let space_per_idx = max_idx_width + 1; // +1 for space separator
+        
+        // Calculate how many indices can fit
+        let available_for_indices = available_width.saturating_sub(suffix.len());
+        let max_indices = (available_for_indices / space_per_idx).max(1).min(total_models);
+        // Calculate window with current index in the middle when possible
+        let half_window = max_indices / 2;
+        let mut start = current_idx.saturating_sub(half_window);
+        let mut end = start + max_indices;
+        
+        // Adjust if we're at the end
+        if end > total_models {
+            end = total_models;
+            start = end.saturating_sub(max_indices);
+        }
+        
+        (start, end, suffix)
+    };
+    
+    let mut spans = Vec::new();
+    
+    let chat_id = app.current_chat.id;
+    // Build the carousel spans
+    for idx in start_idx..end_idx {
+        let display_idx = idx + 1;
+        let model_id = app.current_chat_profile.model_ids.get(idx).copied().unwrap_or(0);
+        
+        // Check if this model has pending inference by checking the JoinHandle
+        let has_pending = app.inference_handles_by_chat_and_model
+            .get(&(chat_id, model_id))
+            .map(|handle| !handle.is_finished())
+            .unwrap_or(false);
+        
+        // Style the index
+        let mut style = Style::default();
+        if has_pending {
+            style = style.fg(Color::Yellow);
+        }
+        if idx == current_idx {
+            style = style.fg(Color::Cyan).add_modifier(Modifier::BOLD);
+        }
+        
+        // Format index with padding to match the width of the largest index
+        let padded_idx = format!("{:>width$}", display_idx, width = max_idx_width);
+        spans.push(Span::styled(padded_idx, style));
+        if idx < end_idx - 1 {
+            spans.push(Span::raw(" "));
+        }
+    }
+    
+    spans.push(Span::raw(suffix));
+    
+    spans
+}
+
 fn render_chat_title(f: &mut Frame, app: &App, area: Rect) {
-    // Create a layout to split the title area for left and right content
+    // Get current model info
+    let model_id = app
+        .current_chat_profile
+        .model_ids
+        .get(app.current_model_idx)
+        .unwrap_or(&0);
+    let model = app.available_models.get(model_id);
+    let model_name: &str = model.map(|m| m.model.as_str()).unwrap_or("?");
+    
+    let title_text = if app.title_inference_in_progress_by_chat.contains(&app.current_chat.id) {
+        format!("    {}", app.get_spinner_char())
+    } else {
+        app.current_chat.title.clone().unwrap_or("New Chat".to_string())
+    };
+    
+    // Use fixed percentages to keep carousel always centered
+    // Create a three-column layout: title | carousel | model name
     let title_layout = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
-            Constraint::Percentage(70), // Left side for title
-            Constraint::Percentage(30), // Right side for additional text
+            Constraint::Percentage(30), // Title section (left)
+            Constraint::Percentage(40), // Carousel section (center)
+            Constraint::Percentage(30), // Model name section (right)
         ])
         .split(area);
 
+    // Render title (left-aligned)
     let title_paragraph = if app
         .title_inference_in_progress_by_chat
         .contains(&app.current_chat.id)
@@ -323,34 +414,26 @@ fn render_chat_title(f: &mut Frame, app: &App, area: Rect) {
             .block(Block::default().borders(Borders::LEFT | Borders::TOP | Borders::BOTTOM))
             .alignment(Alignment::Left)
     } else {
-        Paragraph::new(
-            app.current_chat
-                .title
-                .clone()
-                .unwrap_or("New Chat".to_string()),
-        )
-        .block(Block::default().borders(Borders::LEFT | Borders::TOP | Borders::BOTTOM))
-        .alignment(Alignment::Left)
+        Paragraph::new(title_text)
+            .block(Block::default().borders(Borders::LEFT | Borders::TOP | Borders::BOTTOM))
+            .alignment(Alignment::Left)
     };
-    // Render main title (left-aligned in left area)
     f.render_widget(title_paragraph, title_layout[0]);
 
-    // Get current model info for right-aligned text
-    let model_id = app
-        .current_chat_profile
-        .model_ids
-        .get(app.current_model_idx)
-        .unwrap_or(&0);
-    let model = app.available_models.get(model_id);
-    let model_name: &str = model.map(|m| m.model.as_str()).unwrap_or("?");
-    let model_idx = app.current_model_idx + 1;
-    let total_models = app.current_chat_profile.model_ids.len();
-
-    let model_text = format!("Model {}/{}: {}", model_idx, total_models, model_name);
-    let right_paragraph = Paragraph::new(model_text)
+    // Build and render carousel (centered)
+    let carousel_available_width = title_layout[1].width.saturating_sub(2) as usize; // -2 for borders
+    let carousel_spans = build_model_carousel(app, carousel_available_width);
+    let carousel_line = Line::from(carousel_spans);
+    let carousel_paragraph = Paragraph::new(carousel_line)
+        .block(Block::default().borders(Borders::TOP | Borders::BOTTOM))
+        .alignment(Alignment::Center);
+    f.render_widget(carousel_paragraph, title_layout[1]);
+    
+    // Render model name (right-aligned)
+    let right_paragraph = Paragraph::new(model_name)
         .block(Block::default().borders(Borders::RIGHT | Borders::TOP | Borders::BOTTOM))
         .alignment(Alignment::Right);
-    f.render_widget(right_paragraph, title_layout[1]);
+    f.render_widget(right_paragraph, title_layout[2]);
 }
 
 fn render_chat_content(f: &mut Frame, app: &mut App, area: Rect) {
