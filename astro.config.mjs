@@ -12,7 +12,7 @@ export default defineConfig({
       social: [{
         icon: "github",
         label: "GitHub",
-        href: "https://moonkraken.github.io/shore",
+        href: "https://github.com/MoonKraken/shore",
       }],
       sidebar: [
         {
