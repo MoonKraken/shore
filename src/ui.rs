@@ -3,7 +3,7 @@ use crate::{
     markdown::parse_markdown,
     model::chat::ChatRole,
 };
-use edtui::{EditorTheme, EditorView};
+use edtui::{EditorState, EditorTheme, EditorView};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -11,6 +11,46 @@ use ratatui::{
     text::{Line, Span, Text},
     widgets::{Block, Borders, Cell, Clear, List, ListItem, ListState, Paragraph, Row, Table},
 };
+
+/// Calculate the height needed for a textarea accounting for line wrapping
+fn calculate_textarea_height(textarea: &EditorState, available_width: u16) -> u16 {
+    if available_width <= 2 {
+        return 3; // minimum height with borders
+    }
+    
+    // Account for borders on left and right
+    let inner_width = (available_width - 2) as usize;
+    
+    if inner_width == 0 {
+        return 3;
+    }
+    
+    let mut total_visual_lines = 0;
+    let num_rows = textarea.lines.len();
+    
+    // Iterate through each line (row) in the editor
+    for row_idx in 0..num_rows {
+        // Get the length of this line (number of characters in the row)
+        let line_len = textarea.lines.len_col(row_idx).unwrap_or(0);
+        
+        if line_len == 0 {
+            // Empty line still takes 1 visual row
+            total_visual_lines += 1;
+        } else {
+            // Calculate how many rows this line occupies when wrapped
+            // Using ceiling division: (line_len + inner_width - 1) / inner_width
+            total_visual_lines += (line_len + inner_width - 1) / inner_width;
+        }
+    }
+    
+    // If there are no lines at all, we need at least 1 line for the cursor
+    if total_visual_lines == 0 {
+        total_visual_lines = 1;
+    }
+    
+    // Add 2 for top and bottom borders, with a minimum of 3
+    3.max(total_visual_lines + 2) as u16
+}
 
 /// Wraps text to fit within a given width, preserving line breaks and styling
 fn wrap_text(text: Text, max_width: usize) -> Text<'static> {
@@ -175,7 +215,7 @@ pub fn ui(f: &mut Frame, app: &mut App) {
         .constraints([
             Constraint::Length(3),
             Constraint::Min(0),
-            Constraint::Length(3.max(app.textarea.lines.len() + 2) as u16),
+            Constraint::Length(calculate_textarea_height(&app.textarea, content_area.width)),
         ])
         .split(content_area);
 
