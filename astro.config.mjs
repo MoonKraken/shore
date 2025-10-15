@@ -4,14 +4,13 @@ import starlight from "@astrojs/starlight";
 
 // https://astro.build/config
 export default defineConfig({
-  site: "https://moonkraken.github.io/shore",
   integrations: [
     starlight({
       title: "My Docs",
       social: [{
         icon: "github",
         label: "GitHub",
-        href: "https://moonkraken.github.io/shore",
+        href: "https://github.com/MoonKraken/shore",
       }],
       sidebar: [
         {
