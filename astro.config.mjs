@@ -8,7 +8,7 @@ export default defineConfig({
   base: process.env.NODE_ENV === "production" ? "/shore" : "/",
   integrations: [
     starlight({
-      title: "My Docs",
+      title: "Shore",
       social: [{
         icon: "github",
         label: "GitHub",
@@ -16,15 +16,12 @@ export default defineConfig({
       }],
       sidebar: [
         {
-          label: "Guides",
-          items: [
-            // Each item here is one entry in the navigation menu.
-            { label: "Example Guide", slug: "guides/example" },
-          ],
+          label: "Getting Started",
+          autogenerate: { directory: "gettingstarted" },
         },
         {
-          label: "Reference",
-          autogenerate: { directory: "reference" },
+          label: "Keybindings",
+          autogenerate: { directory: "keybindings" },
         },
       ],
     }),
