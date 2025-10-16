@@ -42,29 +42,36 @@ jobs:
           fi
           echo "version=$VERSION" >> $GITHUB_OUTPUT
 
+      - name: Checkout tap repository
+        uses: actions/checkout@v4
+        with:
+          repository: MoonKraken/homebrew-shore
+          path: homebrew-shore
+
       - name: Update formula URL and version
         run: |
           VERSION="${{ steps.get-version.outputs.version }}"
           
           # Update version in formula
-          sed -i '' "s|url \".*\"|url \"https://github.com/${{ github.repository }}/archive/refs/tags/v${VERSION}.tar.gz\"|" Formula/shore.rb
+          sed -i '' "s|url \".*\"|url \"https://github.com/${{ github.repository }}/archive/refs/tags/v${VERSION}.tar.gz\"|" homebrew-shore/shore.rb
           
           # Download the tarball and calculate sha256
           curl -L -o /tmp/shore.tar.gz "https://github.com/${{ github.repository }}/archive/refs/tags/v${VERSION}.tar.gz"
           SHA256=$(shasum -a 256 /tmp/shore.tar.gz | awk '{print $1}')
           
           # Update sha256 in formula
-          sed -i '' "s|sha256 \".*\"|sha256 \"${SHA256}\"|" Formula/shore.rb
+          sed -i '' "s|sha256 \".*\"|sha256 \"${SHA256}\"|" homebrew-shore/shore.rb
           
-          cat Formula/shore.rb
+          cat homebrew-shore/shore.rb
 
       - name: Install formula
         run: |
-          brew install --build-bottle ./Formula/shore.rb
+          brew tap MoonKraken/shore ./homebrew-shore
+          brew install --build-bottle shore
 
       - name: Build bottle
         run: |
-          brew bottle --json --root-url=https://github.com/${{ github.repository }}/releases/download/v${{ steps.get-version.outputs.version }} ./Formula/shore.rb
+          brew bottle --json --root-url=https://github.com/${{ github.repository }}/releases/download/v${{ steps.get-version.outputs.version }} shore
 
       - name: Get bottle filename
         id: bottle-name
@@ -105,8 +112,11 @@ jobs:
     if: github.event_name == 'release'
     
     steps:
-      - name: Checkout repository
+      - name: Checkout tap repository
         uses: actions/checkout@v4
+        with:
+          repository: MoonKraken/homebrew-shore
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
 
       - name: Download all bottle artifacts
         uses: actions/download-artifact@v4
@@ -117,7 +127,7 @@ jobs:
       - name: Update formula with bottle checksums
         run: |
           # Extract bottle information from JSON files
-          BOTTLE_BLOCK="  bottle do\n    root_url \"https://github.com/${{ github.repository }}/releases/download/${{ github.event.release.tag_name }}\"\n"
+          BOTTLE_BLOCK="  bottle do\n    root_url \"https://github.com/MoonKraken/shore/releases/download/${{ github.event.release.tag_name }}\"\n"
           
           for json_file in *.bottle.json; do
             if [ -f "$json_file" ]; then
@@ -140,15 +150,16 @@ jobs:
               next
             }
             { print }
-          ' Formula/shore.rb > Formula/shore.rb.tmp
+          ' shore.rb > shore.rb.tmp
           
-          mv Formula/shore.rb.tmp Formula/shore.rb
+          mv shore.rb.tmp shore.rb
           
-          cat Formula/shore.rb
+          cat shore.rb
 
       - name: Create Pull Request
         uses: peter-evans/create-pull-request@v5
         with:
+          token: ${{ secrets.TAP_GITHUB_TOKEN }}
           commit-message: "Update bottle checksums for v${{ github.event.release.tag_name }}"
           title: "Update bottle checksums for v${{ github.event.release.tag_name }}"
           body: |
