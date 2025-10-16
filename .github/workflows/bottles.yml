@@ -1,0 +1,163 @@
+name: Build Homebrew Bottles
+
+on:
+  release:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to build bottles for (e.g., 0.1.0)'
+        required: true
+        type: string
+
+env:
+  FORMULA_NAME: shore
+
+jobs:
+  build-bottles:
+    strategy:
+      matrix:
+        os:
+          - macos-13      # Ventura
+          - macos-14      # Sonoma (Apple Silicon)
+          - macos-15      # Sequoia
+    runs-on: ${{ matrix.os }}
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Homebrew
+        id: set-up-homebrew
+        uses: Homebrew/actions/setup-homebrew@master
+
+      - name: Get version
+        id: get-version
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            VERSION="${{ github.event.release.tag_name }}"
+            VERSION="${VERSION#v}"  # Remove 'v' prefix if present
+          else
+            VERSION="${{ github.event.inputs.version }}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Update formula URL and version
+        run: |
+          VERSION="${{ steps.get-version.outputs.version }}"
+          
+          # Update version in formula
+          sed -i '' "s|url \".*\"|url \"https://github.com/${{ github.repository }}/archive/refs/tags/v${VERSION}.tar.gz\"|" Formula/shore.rb
+          
+          # Download the tarball and calculate sha256
+          curl -L -o /tmp/shore.tar.gz "https://github.com/${{ github.repository }}/archive/refs/tags/v${VERSION}.tar.gz"
+          SHA256=$(shasum -a 256 /tmp/shore.tar.gz | awk '{print $1}')
+          
+          # Update sha256 in formula
+          sed -i '' "s|sha256 \".*\"|sha256 \"${SHA256}\"|" Formula/shore.rb
+          
+          cat Formula/shore.rb
+
+      - name: Install formula
+        run: |
+          brew install --build-bottle ./Formula/shore.rb
+
+      - name: Build bottle
+        run: |
+          brew bottle --json --root-url=https://github.com/${{ github.repository }}/releases/download/v${{ steps.get-version.outputs.version }} ./Formula/shore.rb
+
+      - name: Get bottle filename
+        id: bottle-name
+        run: |
+          BOTTLE_FILE=$(ls *.bottle.tar.gz)
+          echo "filename=$BOTTLE_FILE" >> $GITHUB_OUTPUT
+          
+          # Also get the OS-specific name for the release
+          if [[ "${{ matrix.os }}" == "macos-13" ]]; then
+            OS_NAME="ventura"
+          elif [[ "${{ matrix.os }}" == "macos-14" ]]; then
+            OS_NAME="sonoma"
+          elif [[ "${{ matrix.os }}" == "macos-15" ]]; then
+            OS_NAME="sequoia"
+          fi
+          echo "os_name=$OS_NAME" >> $GITHUB_OUTPUT
+
+      - name: Upload bottle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bottle-${{ steps.bottle-name.outputs.os_name }}
+          path: |
+            *.bottle.tar.gz
+            *.bottle.json
+
+      - name: Upload bottle to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            *.bottle.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  update-formula:
+    needs: build-bottles
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all bottle artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: bottle-*
+          merge-multiple: true
+
+      - name: Update formula with bottle checksums
+        run: |
+          # Extract bottle information from JSON files
+          BOTTLE_BLOCK="  bottle do\n    root_url \"https://github.com/${{ github.repository }}/releases/download/${{ github.event.release.tag_name }}\"\n"
+          
+          for json_file in *.bottle.json; do
+            if [ -f "$json_file" ]; then
+              # Parse JSON to get OS and sha256
+              OS=$(jq -r 'keys[0] as $formula | .[$formula].bottle.tags | keys[0]' "$json_file")
+              SHA256=$(jq -r 'keys[0] as $formula | .[$formula].bottle.tags['\"$OS\"'].sha256' "$json_file")
+              
+              BOTTLE_BLOCK="${BOTTLE_BLOCK}    sha256 cellar: :any_skip_relocation, ${OS}: \"${SHA256}\"\n"
+            fi
+          done
+          
+          BOTTLE_BLOCK="${BOTTLE_BLOCK}  end\n"
+          
+          # Insert bottle block after the license line
+          awk -v bottle="$BOTTLE_BLOCK" '
+            /license/ {
+              print
+              print ""
+              printf "%b", bottle
+              next
+            }
+            { print }
+          ' Formula/shore.rb > Formula/shore.rb.tmp
+          
+          mv Formula/shore.rb.tmp Formula/shore.rb
+          
+          cat Formula/shore.rb
+
+      - name: Create Pull Request
+        uses: peter-evans/create-pull-request@v5
+        with:
+          commit-message: "Update bottle checksums for v${{ github.event.release.tag_name }}"
+          title: "Update bottle checksums for v${{ github.event.release.tag_name }}"
+          body: |
+            This PR updates the Homebrew formula with bottle checksums for version ${{ github.event.release.tag_name }}.
+            
+            Bottles were built for:
+            - macOS Ventura (13)
+            - macOS Sonoma (14)
+            - macOS Sequoia (15)
+          branch: bottles-${{ github.event.release.tag_name }}
+          delete-branch: true
+

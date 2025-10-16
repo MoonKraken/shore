@@ -18,6 +18,25 @@ A Terminal User Interface (TUI) application for chatting with multiple language 
 
 ## Installation
 
+### Using Cargo (Recommended)
+
+```bash
+cargo install shore
+```
+
+### Using Homebrew (macOS)
+
+```bash
+# Option 1: Tap and install
+brew tap MoonKraken/shore
+brew install shore
+
+# Option 2: Install directly without tapping
+brew install MoonKraken/shore/shore
+```
+
+### Building from Source
+
 1. Clone the repository:
 ```bash
 git clone <repository-url>
