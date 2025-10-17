@@ -22,10 +22,16 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_span_events(FmtSpan::ENTER | FmtSpan::CLOSE)
-        .with_writer(std::io::stderr)
-        .init();
+    // only log if the SHORE_LOG env var is set
+    // when doing this the user needs to make sure to pipe stderr
+    // to a file and tail the file if they want to follow the logs
+    // otherwise the TUI interface will be ruined by log output
+    if let Ok(_) = std::env::var("SHORE_LOG") {
+        tracing_subscriber::fmt()
+            .with_span_events(FmtSpan::ENTER | FmtSpan::CLOSE)
+            .with_writer(std::io::stderr)
+            .init();
+    }
 
     let cli = Cli::parse();
     let db_name = cli.database.unwrap_or_else(|| "default".to_string());

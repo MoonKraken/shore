@@ -177,9 +177,6 @@ impl ProviderClient for OpenAIProvider {
             }
         }); 
 
-        dbg!(&tool_calls);
-        dbg!(&content);
-
         Ok(GenerationResult {
             content,
             tool_calls
