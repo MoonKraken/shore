@@ -80,14 +80,31 @@ fn wrap_text(text: Text, max_width: usize) -> Text<'static> {
             continue;
         }
 
-        // Collect all styled segments (word + style)
-        let mut segments: Vec<(String, Style)> = Vec::new();
+        // Collect all styled segments, preserving spaces as separate segments
+        // Each segment is (content, style, is_space)
+        let mut segments: Vec<(String, Style, bool)> = Vec::new();
 
         for span in &line.spans {
-            // Split the span content into words while preserving the style
-            let words: Vec<&str> = span.content.split_whitespace().collect();
-            for word in words {
-                segments.push((word.to_string(), span.style));
+            // Split into words and spaces, preserving the spaces
+            let mut current_word = String::new();
+            
+            for ch in span.content.chars() {
+                if ch.is_whitespace() {
+                    // If we have a word accumulated, push it
+                    if !current_word.is_empty() {
+                        segments.push((current_word.clone(), span.style, false));
+                        current_word.clear();
+                    }
+                    // Push the space as a separate segment
+                    segments.push((ch.to_string(), span.style, true));
+                } else {
+                    current_word.push(ch);
+                }
+            }
+            
+            // Push any remaining word
+            if !current_word.is_empty() {
+                segments.push((current_word, span.style, false));
             }
         }
 
@@ -99,12 +116,38 @@ fn wrap_text(text: Text, max_width: usize) -> Text<'static> {
         // Wrap the segments into lines
         let mut current_spans: Vec<Span<'static>> = Vec::new();
         let mut current_width = 0;
+        let mut i = 0;
 
-        for (word, style) in segments.iter() {
-            let word_width = word.chars().count();
+        while i < segments.len() {
+            let (content, style, is_space) = &segments[i];
+            
+            if *is_space {
+                // Space handling: check if we should wrap before adding it
+                if current_width > 0 && current_width < max_width {
+                    // Add the space if we're in the middle of a line
+                    if let Some(last_span) = current_spans.last_mut() {
+                        if last_span.style == *style {
+                            let mut new_content = last_span.content.to_string();
+                            new_content.push_str(content);
+                            *last_span = Span::styled(new_content, *style);
+                        } else {
+                            current_spans.push(Span::styled(content.clone(), *style));
+                        }
+                    } else {
+                        current_spans.push(Span::styled(content.clone(), *style));
+                    }
+                    current_width += content.chars().count();
+                }
+                // Skip spaces at the start of a line or when at max_width
+                i += 1;
+                continue;
+            }
+            
+            // Non-space segment (word/text)
+            let content_width = content.chars().count();
 
             // If the word itself is longer than max_width, we need to break it
-            if word_width > max_width {
+            if content_width > max_width {
                 if !current_spans.is_empty() {
                     wrapped_lines.push(Line::from(current_spans));
                     current_spans = Vec::new();
@@ -112,46 +155,39 @@ fn wrap_text(text: Text, max_width: usize) -> Text<'static> {
                 }
 
                 // Break the long word into chunks
-                let chars: Vec<char> = word.chars().collect();
+                let chars: Vec<char> = content.chars().collect();
                 for chunk in chars.chunks(max_width) {
                     let chunk_str: String = chunk.iter().collect();
                     wrapped_lines.push(Line::from(vec![Span::styled(chunk_str, *style)]));
                 }
+                i += 1;
                 continue;
             }
 
             // Check if adding this word would exceed the max width
-            let space_width = if current_width == 0 { 0 } else { 1 };
-            if current_width + space_width + word_width > max_width {
-                if !current_spans.is_empty() {
-                    wrapped_lines.push(Line::from(current_spans));
-                    current_spans = Vec::new();
-                    current_width = 0;
-                }
+            if current_width + content_width > max_width && current_width > 0 {
+                // Wrap to next line
+                wrapped_lines.push(Line::from(current_spans));
+                current_spans = Vec::new();
+                current_width = 0;
             }
 
-            // Add space before word if not at the start of a line
-            if current_width > 0 {
-                // Try to merge with previous span if same style
-                if let Some(last_span) = current_spans.last_mut() {
-                    if last_span.style == *style {
-                        let mut new_content = last_span.content.to_string();
-                        new_content.push(' ');
-                        new_content.push_str(word);
-                        *last_span = Span::styled(new_content, *style);
-                        current_width += 1 + word_width;
-                    } else {
-                        current_spans.push(Span::styled(format!(" {}", word), *style));
-                        current_width += 1 + word_width;
-                    }
+            // Add the segment
+            if let Some(last_span) = current_spans.last_mut() {
+                if last_span.style == *style {
+                    // Merge with previous span if same style
+                    let mut new_content = last_span.content.to_string();
+                    new_content.push_str(content);
+                    *last_span = Span::styled(new_content, *style);
                 } else {
-                    current_spans.push(Span::styled(word.clone(), *style));
-                    current_width += word_width;
+                    current_spans.push(Span::styled(content.clone(), *style));
                 }
             } else {
-                current_spans.push(Span::styled(word.clone(), *style));
-                current_width += word_width;
+                current_spans.push(Span::styled(content.clone(), *style));
             }
+            current_width += content_width;
+            
+            i += 1;
         }
 
         if !current_spans.is_empty() {

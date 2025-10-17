@@ -272,13 +272,46 @@ mod tests {
 
     #[test]
     fn test_parse_bold_with_period() {
-        let text = parse_markdown("This is **bold**.");
+        let text = parse_markdown("This is **bold**. Testing 123");
         assert_eq!(text.lines.len(), 1);
         
         // Verify no extra spaces are added between bold text and period
         let line = &text.lines[0];
         let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(rendered, "This is bold.");
+        assert_eq!(rendered, "This is bold. Testing 123");
+    }
+
+    #[test]
+    fn test_parse_code_with_comma() {
+        let text = parse_markdown("This is `code`, with a comma");
+        assert_eq!(text.lines.len(), 1);
+        
+        // Verify no extra spaces are added between code and comma
+        let line = &text.lines[0];
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(rendered, "This is code, with a comma");
+    }
+
+    #[test]
+    fn test_parse_bold_with_colon() {
+        let text = parse_markdown("This is **bold**: and more");
+        assert_eq!(text.lines.len(), 1);
+        
+        // Verify no extra spaces are added between bold and colon
+        let line = &text.lines[0];
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(rendered, "This is bold: and more");
+    }
+
+    #[test]
+    fn test_parse_multiple_formats_no_spaces() {
+        // Test formatting with no spaces between formatted text and punctuation
+        let text = parse_markdown("Use `function()`, then **bold**, and *italic*:");
+        assert_eq!(text.lines.len(), 1);
+        
+        let line = &text.lines[0];
+        let rendered: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(rendered, "Use function(), then bold, and italic:");
     }
 
     #[test]
