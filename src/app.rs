@@ -1147,6 +1147,14 @@ impl App {
                     model_id
                 );
                 messages.push(message_2.clone());
+                // auto scroll the user to the message they just submitted
+                // for all models
+                if let Some(current_idx) = self.current_message_index.get_mut(&model_id) {
+                    *current_idx = messages.len() - 1;
+                    if let Some(current_chunk_idx) = self.current_chunk_idx.get_mut(&model_id) {
+                        *current_chunk_idx = 0;
+                    }
+                }
             });
 
         // todo maybe eliminate this clone? might not be possible
@@ -1198,11 +1206,11 @@ impl App {
                     // this is O(n) so we are banking on chats being relatively small.
                     // with chats less than 100 messages, it is probably faster than a map lookup approach
                     // revisit this if it becomes common for chats to be large
-                    let insert_idx = messages
+                    let origin_message_idx = messages
                         .iter()
                         .position(|message| message.id == origin_message_id);
                         
-                    let insert_idx = if let Some(insert_idx) = insert_idx {
+                    let insert_idx = if let Some(insert_idx) = origin_message_idx {
                         insert_idx + 1
                     } else {
                         error!("Origin message id not found in current messages, this should not happen");
@@ -1210,6 +1218,13 @@ impl App {
                     };
 
                     messages.insert(insert_idx, result);
+
+                    // if the current message index <= the insert position, we need to increment it so
+                    // the user isn't suddenly taken to a different message. This would only happen
+                    // if the user has more than one pending inference request.
+                    if let Some(curr_index) = self.current_message_index.get_mut(&model_id) && *curr_index >= insert_idx {
+                        *curr_index = *curr_index + 1;
+                    }
                 }
             }
             InferenceEvent::TitleInferenceComplete { chat_id, title } => {
