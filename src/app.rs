@@ -121,7 +121,7 @@ pub struct App {
     // Unavailable models error state
     pub unavailable_models_info: Vec<(String, String)>, // (model_name, provider_name)
     // Track last key press for double-tap detection (e.g., 'cc' to clear)
-    pub last_key_press: Option<(KeyCode, Instant)>,
+    pub last_key_press: Option<KeyCode>,
 }
 
 /// Find the first viable model for the default chat profile
@@ -425,48 +425,6 @@ impl App {
             _ => {}
         }
 
-        // Check for 'cc' double-tap to clear textarea and enter insert mode (vim-like behavior)
-        // Check for 'dd' double-tap to clear textarea without entering insert mode
-        if (key.code == KeyCode::Char('c') || key.code == KeyCode::Char('d'))
-            && self.textarea.mode != EditorMode::Insert
-            && self.search_textarea.mode != EditorMode::Insert
-        {
-            let current_char = match key.code {
-                KeyCode::Char(c) => c,
-                _ => unreachable!(),
-            };
-            
-            let is_double_press = if let Some((last_code, _last_time)) = self.last_key_press {
-                if let KeyCode::Char(c) = last_code {
-                    c == current_char
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-
-            if is_double_press {
-                // Clear the textarea
-                self.textarea = EditorState::default();
-                
-                // For 'cc', enter insert mode; for 'dd', stay in normal mode
-                if current_char == 'c' {
-                    self.textarea.mode = EditorMode::Insert;
-                }
-                
-                self.last_key_press = None;
-                self.numeric_prefix = None;
-                return Ok(());
-            } else {
-                // Record this press for potential double-tap
-                self.last_key_press = Some((key.code, Instant::now()));
-            }
-        } else if !matches!(key.code, KeyCode::Char('c') | KeyCode::Char('d')) {
-            // Reset last key press if it's not 'c' or 'd'
-            self.last_key_press = None;
-        }
-
         // if the prompt editor is in insert mode, all events go to the prompt editor
         // unless it is the enter key, which will submit the message
         if self.textarea.mode == EditorMode::Insert && key.code != KeyCode::Enter {
@@ -483,10 +441,57 @@ impl App {
         // Get the count to use for navigation (default to 1 if no prefix)
         let count = self.numeric_prefix.unwrap_or(1);
 
-        // When prompt is empty, numbers do other things
+        // When prompt is empty, we repurpose editor bindings for other stuff
         if is_prompt_empty {
+            // Handle double-tap keys ('c' and 'g') when prompt is empty
+            if let KeyCode::Char(current_char) = key.code && (current_char == 'c' || current_char == 'g') {
+                let second_press = if let Some(last_code) = self.last_key_press {
+                    if let KeyCode::Char(c) = last_code {
+                        c == current_char
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+
+                if second_press {
+                    // Clear the textarea
+                    self.textarea = EditorState::default();
+                    
+                    // For 'cc', enter insert mode; for 'gg', stay in normal mode
+                    if current_char == 'c' {
+                        self.textarea.mode = EditorMode::Insert;
+                    } else { // g case
+                        info!("g second tap");
+                        if let Some(current_model_id) = self.current_chat_profile.model_ids.get(self.current_model_idx) {
+                            let message_idx = self.current_message_index.get_mut(current_model_id); 
+                            if let Some(message_idx) = message_idx {
+                                *message_idx = 0;
+                                let chunk_idx = self.current_chunk_idx.get_mut(current_model_id); 
+                                if let Some(chunk_idx) = chunk_idx {
+                                    *chunk_idx = 0;
+                                }
+                            }
+                        }
+                    }
+                    
+                    self.last_key_press = None;
+                    self.numeric_prefix = None;
+                } else {
+                    // Record this press for potential double-tap
+                    self.last_key_press = Some(key.code);
+                }
+
+                return Ok(())
+            } 
+
+            // Reset last key press if it's not 'c' or 'g'
+            self.last_key_press = None;
+
             match key.code {
-                KeyCode::Char('0') => {
+                // bypass this if the user is entering a numeric prefix for navigation
+                KeyCode::Char('0') if self.numeric_prefix.is_none() => {
                     // Select the first model
                     if !self.current_chat_profile.model_ids.is_empty() {
                         self.current_model_idx = 0;
@@ -626,7 +631,22 @@ impl App {
                     let digit = c.to_digit(10).unwrap() as usize;
                     self.numeric_prefix = Some(self.numeric_prefix.unwrap_or(0) * 10 + digit);
                     return Ok(());
-                }
+                },
+                KeyCode::Char('G') => {
+                    info!("capital g");
+                    let current_model_id = self.current_chat_profile.model_ids.get(self.current_model_idx);
+                    if let Some(current_model_id) = current_model_id {
+                        let last_message_idx = self.current_messages.get(current_model_id).map(|messages| messages.len() - 1);
+                        let curr_idx = self.current_message_index.get_mut(current_model_id);
+                        if let (Some(curr_idx), Some(last_message_idx)) = (curr_idx, last_message_idx) {
+                            *curr_idx = last_message_idx;
+                            if let Some(curr_chunk_idx) = self.current_chunk_idx.get_mut(current_model_id) {
+                                *curr_chunk_idx = usize::MAX; // this will be rewritten to the highest chunk value in rendering
+                            }
+                        };
+                    }
+                    return Ok(())
+                },
                 _ => {}
             }
         }
@@ -843,6 +863,14 @@ impl App {
                 } else if !text.trim().is_empty() {
                     self.submit_message().await?;
                 }
+            }
+            KeyEvent {
+                code: KeyCode::Char('G') | KeyCode::Char('g'),
+                ..
+            } if !is_prompt_empty => {
+                // When prompt is not empty, send 'G' and 'g' to the editor
+                let mut event_handler = EditorEventHandler::default();
+                event_handler.on_key_event(key, &mut self.textarea);
             }
             _ => {
                 // Clear numeric prefix on any other key
