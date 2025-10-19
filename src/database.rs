@@ -110,7 +110,7 @@ impl Database {
     #[instrument(level = "info", skip(self))]
     pub async fn get_models_for_provider(&self, provider_id: i64) -> Result<Vec<Model>> {
         let models = sqlx::query_as::<_, Model>(
-            "SELECT id, provider_id, model, disabled, deprecated, created_dt FROM model WHERE provider_id = ? AND NOT deprecated ORDER BY id ASC"
+            "SELECT id, provider_id, model, api_type, disabled, deprecated, created_dt FROM model WHERE provider_id = ? AND NOT deprecated ORDER BY id ASC"
         )
         .bind(provider_id)
         .fetch_all(&self.pool)
@@ -121,7 +121,7 @@ impl Database {
 
     pub async fn get_all_models(&self) -> Result<Vec<Model>> {
         let models = sqlx::query_as::<_, Model>(
-            "SELECT id, provider_id, model, disabled, deprecated, created_dt FROM model WHERE NOT deprecated ORDER BY provider_id, model"
+            "SELECT id, provider_id, model, api_type, disabled, deprecated, created_dt FROM model WHERE NOT deprecated ORDER BY provider_id, model"
         )
         .fetch_all(&self.pool)
         .await?;
@@ -132,10 +132,11 @@ impl Database {
     #[instrument(level = "info", skip(self, model), fields(provider_id = model.provider_id, model_name = %model.model))]
     pub async fn add_model(&self, model: &Model) -> Result<i64> {
         let result = sqlx::query(
-            "INSERT INTO model (provider_id, model, disabled, deprecated, created_dt) VALUES (?, ?, ?, ?, ?) RETURNING id"
+            "INSERT INTO model (provider_id, model, api_type, disabled, deprecated, created_dt) VALUES (?, ?, ?, ?, ?, ?) RETURNING id"
         )
         .bind(model.provider_id)
         .bind(&model.model)
+        .bind(model.api_type)
         .bind(model.disabled)
         .bind(model.deprecated)
         .bind(model.created_dt)
