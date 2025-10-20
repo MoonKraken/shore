@@ -28,7 +28,6 @@ Contributions are welcome! [Shore GitHub Repository](https://github.com/MoonKrak
 * OpenAI
 * Anthropic
 * Groq
-* Google
 
 ### Locally Stored
 All conversation history, chat profiles etc are stored in a local SQLite database.  default location is `~/.shore/default.db`
