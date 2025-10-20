@@ -2,35 +2,89 @@
 title: Shore
 description: Terminal based LLM chat. Vim inspired. Free, open source and vendor neutral.
 template: splash
-hero:
-  tagline: Terminal based LLM chat. Vim inspired. Free, open source and vendor neutral.
-  image:
-    file: ../../assets/houston.webp
-  actions:
-    - text: Read the docs
-      link: gettingstarted/about/
-      icon: right-arrow
-    - text: Star on GitHub
-      link: https://github.com/MoonKraken/shore
-      icon: star
-      variant: minimal
+# this hero component appears to have no reasonable way of controlling image size
+# hero:
+#   tagline: Terminal based LLM chat.
+#   actions:
+#     - text: Read the docs
+#       link: gettingstarted/about/
+#       icon: right-arrow
+#     - text: Star on GitHub
+#       link: https://github.com/MoonKraken/shore
+#       icon: star
+#       variant: minimal
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { Card, CardGrid, LinkButton, Steps } from '@astrojs/starlight/components';
+import { Image } from 'astro:assets';
+import heroImage from '../../assets/shore-hero.png';
 
-## Next steps
+{/* import demoVideo from '../../assets/shore-demo.mp4'; */}
 
-<CardGrid stagger>
-	<Card title="Update content" icon="pencil">
-		Edit `src/content/docs/index.mdx` to see this page change.
+{/* this does away with the h1 page title that seems otherwise unavoidable*/}
+<style is:global>{`
+  main .content-panel:first-of-type {
+    display: none;
+  }
+`}</style>
+
+<div class="flex flex-row place-items-center overflow-hidden">
+<div class="basis-2/5 flex-none">
+	<h1>Shore</h1>
+	<p>LLM chat in the terminal. Open source. Vendor neutral.</p>
+	<div>
+		<LinkButton icon="document" href="gettingstarted/about">Read the docs</LinkButton>
+		<LinkButton icon="star" variant="secondary" href="https://www.github.com/MoonKraken/shore">Star on Github</LinkButton>
+	</div>
+	</div>
+  <div class="basis-3/5 shrink min-w-0">
+    <Image src={heroImage} alt="Shore - Terminal based LLM chat" widths={[400, 800, 1200]} sizes="(max-width: 768px) 100vw, 50vw" />
+  </div>
+</div>
+
+<Steps>
+1. Install (more options coming soon)
+	```shell
+	cargo install shore
+	```
+2. Set **at least** one supported API key in your shell environment
+	```shell
+	export HF_TOKEN=[your token here]
+	export OPENAI_API_KEY=[your token here]
+	export ANTHROPIC_API_KEY=[your token here]
+	export GROQ_API_KEY=[your token here]
+	```
+3. Launch
+	```shell
+	shore
+	```
+4. Review [Keybindings](/keybindings/01-overview)
+
+</Steps>
+
+## Features
+
+<CardGrid>
+	<Card title="Lightweight" icon="rocket">
+		Runs in about 9MB memory
 	</Card>
-	<Card title="Add new content" icon="add-document">
-		Add Markdown or MDX files to `src/content/docs` to create new pages.
+	<Card title="Concurrent Chat" icon="bars">
+		One prompt, multiple models and providers
 	</Card>
-	<Card title="Configure your site" icon="setting">
-		Edit your `sidebar` and other config in `astro.config.mjs`.
+	<Card title="Blazingly fast" icon="seti:rust">
+		Written in Rust - no garbage collector or bloat
 	</Card>
-	<Card title="Read the docs" icon="open-book">
-		Learn more in [the Starlight Docs](https://starlight.astro.build/).
+	<Card title="Terminal based" icon="vim">
+		Simple, clean interface with vim inspired key bindings
+	</Card>
+	<Card title="Free and open source" icon="seti:license">
+		MIT Licensed contributions welcome!
+	</Card>
+	<Card title="Local-first" icon="seti:folder">
+		Conversations are stored locally, not in the cloud
+	</Card>
+	<Card title="Full text search" icon="document">
+		Instantaneous keyword search of prior conversations - they are stored locally!
 	</Card>
 </CardGrid>
+{/* <video src={demoVideo} autoplay playsinline loop muted></video> */}

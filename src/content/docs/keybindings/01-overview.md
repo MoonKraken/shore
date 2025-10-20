@@ -23,4 +23,3 @@ Below are the most essential key bindings, roughly in order of importance. The p
 | `j` / `k` | Move up and down amongst messages in the current chat (if prompt field is empty) |
 | `q` / `z` | Move up and down in chat history (supports numeric prefix for multi-line jumps) |
 | `/` | Search mode (full text search of chat content and titles) |
-| `Ctrl-t` | Edit chat title |
