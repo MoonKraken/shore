@@ -2,13 +2,19 @@
 import { defineConfig } from "astro/config";
 import starlight from "@astrojs/starlight";
 
+import tailwindcss from "@tailwindcss/vite";
+
 // https://astro.build/config
 export default defineConfig({
   site: "https://moonkraken.github.io",
   base: process.env.NODE_ENV === "production" ? "/shore" : "/",
+
   integrations: [
     starlight({
       title: "Shore",
+      customCss: [
+        './src/styles/global.css'
+      ],
       social: [{
         icon: "github",
         label: "GitHub",
@@ -26,4 +32,8 @@ export default defineConfig({
       ],
     }),
   ],
+
+  vite: {
+    plugins: [tailwindcss()],
+  },
 });
