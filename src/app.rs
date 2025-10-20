@@ -37,9 +37,10 @@ fn editor_state_to_string(state: &EditorState) -> String {
     // Collect all characters and convert to string
     let all_chars: String = state
         .lines
-        .iter()
-        .filter_map(|(ch_opt, _)| ch_opt.copied())
-        .collect();
+        .iter_row()
+        .map(|row| row.iter().collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n");
     all_chars
 }
 
@@ -427,7 +428,8 @@ impl App {
 
         // if the prompt editor is in insert mode, all events go to the prompt editor
         // unless it is the enter key, which will submit the message
-        if self.textarea.mode == EditorMode::Insert && key.code != KeyCode::Enter {
+        // Shift-Enter should be sent to the editor though
+        if self.textarea.mode == EditorMode::Insert && (key.code != KeyCode::Enter || key.modifiers.contains(KeyModifiers::SHIFT)) {
             self.numeric_prefix = None;
             let mut event_handler = EditorEventHandler::default();
             event_handler.on_key_event(key, &mut self.textarea);

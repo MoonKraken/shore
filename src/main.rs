@@ -1,7 +1,6 @@
 mod app;
 mod database;
 mod ui;
-mod handlers;
 mod markdown;
 mod model_select_modal;
 pub mod model;
