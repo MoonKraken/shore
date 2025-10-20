@@ -111,7 +111,7 @@ pub struct App {
     pub cached_provider_data: Vec<(String, String, bool)>,       // (name, env_var, is_set)
     pub available_models: HashMap<i64, Model>,                   // model_id -> model
     pub all_models: HashMap<i64, Model>,
-    pub provider_names: HashMap<i64, String>,                    // provider_id -> provider name
+    pub provider_names: HashMap<i64, String>, // provider_id -> provider name
     // Model selection dialog state
     pub model_select_modal: Option<ModelSelectModal>,
     // Spinner animation state
@@ -190,7 +190,10 @@ impl App {
         for model in models {
             info!("Model {}: {}", model.id, model.model);
             all_models.insert(model.id, model.clone());
-            if *provider_api_keys_set.get(&model.provider_id).unwrap_or(&false) {
+            if *provider_api_keys_set
+                .get(&model.provider_id)
+                .unwrap_or(&false)
+            {
                 available_models.insert(model.id, model);
             }
         }
@@ -214,7 +217,7 @@ impl App {
             let default_models = default_profile.model_ids.clone();
             let mut models_retained = 0;
             for model_id in default_models {
-                if !available_models.contains_key(&model_id){
+                if !available_models.contains_key(&model_id) {
                     database.remove_chat_profile_model(0, model_id).await?;
                 } else {
                     models_retained += 1;
@@ -386,7 +389,9 @@ impl App {
             AppState::ProviderDialog => self.handle_provider_dialog_key(key).await?,
             AppState::DeleteConfirmation => self.handle_delete_confirmation_key(key).await?,
             AppState::TitleEdit => self.handle_title_edit_key(key).await?,
-            AppState::UnavailableModelsError => self.handle_unavailable_models_error_key(key).await?,
+            AppState::UnavailableModelsError => {
+                self.handle_unavailable_models_error_key(key).await?
+            }
         }
 
         Ok(())
@@ -422,6 +427,15 @@ impl App {
             } => {
                 self.state = AppState::ProviderDialog;
                 self.numeric_prefix = None;
+                return Ok(());
+            }
+            KeyEvent {
+                code: KeyCode::Char('h'),
+                modifiers: KeyModifiers::CONTROL,
+                ..
+            } => {
+                self.chat_history_collapsed = !self.chat_history_collapsed;
+                return Ok(());
             }
             _ => {}
         }
@@ -429,7 +443,9 @@ impl App {
         // if the prompt editor is in insert mode, all events go to the prompt editor
         // unless it is the enter key, which will submit the message
         // Shift-Enter should be sent to the editor though
-        if self.textarea.mode == EditorMode::Insert && (key.code != KeyCode::Enter || key.modifiers.contains(KeyModifiers::SHIFT)) {
+        if self.textarea.mode == EditorMode::Insert
+            && (key.code != KeyCode::Enter || key.modifiers.contains(KeyModifiers::SHIFT))
+        {
             self.numeric_prefix = None;
             let mut event_handler = EditorEventHandler::default();
             event_handler.on_key_event(key, &mut self.textarea);
@@ -446,7 +462,9 @@ impl App {
         // When prompt is empty, we repurpose editor bindings for other stuff
         if is_prompt_empty {
             // Handle double-tap keys ('c' and 'g') when prompt is empty
-            if let KeyCode::Char(current_char) = key.code && (current_char == 'c' || current_char == 'g') {
+            if let KeyCode::Char(current_char) = key.code
+                && (current_char == 'c' || current_char == 'g')
+            {
                 let second_press = if let Some(last_code) = self.last_key_press {
                     if let KeyCode::Char(c) = last_code {
                         c == current_char
@@ -460,24 +478,29 @@ impl App {
                 if second_press {
                     // Clear the textarea
                     self.textarea = EditorState::default();
-                    
+
                     // For 'cc', enter insert mode; for 'gg', stay in normal mode
                     if current_char == 'c' {
                         self.textarea.mode = EditorMode::Insert;
-                    } else { // g case
+                    } else {
+                        // g case
                         info!("g second tap");
-                        if let Some(current_model_id) = self.current_chat_profile.model_ids.get(self.current_model_idx) {
-                            let message_idx = self.current_message_index.get_mut(current_model_id); 
+                        if let Some(current_model_id) = self
+                            .current_chat_profile
+                            .model_ids
+                            .get(self.current_model_idx)
+                        {
+                            let message_idx = self.current_message_index.get_mut(current_model_id);
                             if let Some(message_idx) = message_idx {
                                 *message_idx = 0;
-                                let chunk_idx = self.current_chunk_idx.get_mut(current_model_id); 
+                                let chunk_idx = self.current_chunk_idx.get_mut(current_model_id);
                                 if let Some(chunk_idx) = chunk_idx {
                                     *chunk_idx = 0;
                                 }
                             }
                         }
                     }
-                    
+
                     self.last_key_press = None;
                     self.numeric_prefix = None;
                 } else {
@@ -485,8 +508,8 @@ impl App {
                     self.last_key_press = Some(key.code);
                 }
 
-                return Ok(())
-            } 
+                return Ok(());
+            }
 
             // Reset last key press if it's not 'c' or 'g'
             self.last_key_press = None;
@@ -514,18 +537,19 @@ impl App {
                     if !self.current_chat_profile.model_ids.is_empty() {
                         let start_idx = self.current_model_idx;
                         let num_models = self.current_chat_profile.model_ids.len();
-                        
+
                         // Try to find the next model without a pending inference
                         for i in 1..=num_models {
                             let test_idx = (start_idx + i) % num_models;
                             let model_id = self.current_chat_profile.model_ids[test_idx];
-                            
+
                             // Check if this model has a pending inference request in the current chat
-                            let has_pending = self.inference_handles_by_chat_and_model
+                            let has_pending = self
+                                .inference_handles_by_chat_and_model
                                 .get(&(self.current_chat.id, model_id))
                                 .map(|handle| !handle.is_finished())
                                 .unwrap_or(false);
-                            
+
                             if !has_pending {
                                 self.current_model_idx = test_idx;
                                 break;
@@ -633,22 +657,32 @@ impl App {
                     let digit = c.to_digit(10).unwrap() as usize;
                     self.numeric_prefix = Some(self.numeric_prefix.unwrap_or(0) * 10 + digit);
                     return Ok(());
-                },
+                }
                 KeyCode::Char('G') => {
                     info!("capital g");
-                    let current_model_id = self.current_chat_profile.model_ids.get(self.current_model_idx);
+                    let current_model_id = self
+                        .current_chat_profile
+                        .model_ids
+                        .get(self.current_model_idx);
                     if let Some(current_model_id) = current_model_id {
-                        let last_message_idx = self.current_messages.get(current_model_id).map(|messages| messages.len() - 1);
+                        let last_message_idx = self
+                            .current_messages
+                            .get(current_model_id)
+                            .map(|messages| messages.len() - 1);
                         let curr_idx = self.current_message_index.get_mut(current_model_id);
-                        if let (Some(curr_idx), Some(last_message_idx)) = (curr_idx, last_message_idx) {
+                        if let (Some(curr_idx), Some(last_message_idx)) =
+                            (curr_idx, last_message_idx)
+                        {
                             *curr_idx = last_message_idx;
-                            if let Some(curr_chunk_idx) = self.current_chunk_idx.get_mut(current_model_id) {
+                            if let Some(curr_chunk_idx) =
+                                self.current_chunk_idx.get_mut(current_model_id)
+                            {
                                 *curr_chunk_idx = usize::MAX; // this will be rewritten to the highest chunk value in rendering
                             }
                         };
                     }
-                    return Ok(())
-                },
+                    return Ok(());
+                }
                 _ => {}
             }
         }
@@ -1084,7 +1118,8 @@ impl App {
             if !self.available_models.contains_key(&model_id) {
                 // Model is not available, get model info
                 if let Some(model) = self.all_models.get(&model_id) {
-                    let provider_name = self.provider_names
+                    let provider_name = self
+                        .provider_names
                         .get(&model.provider_id)
                         .cloned()
                         .unwrap_or_else(|| "Unknown Provider".to_string());
@@ -1092,7 +1127,7 @@ impl App {
                 } else {
                     unavailable_models.push((
                         format!("Unknown Model (ID: {})", model_id),
-                        "Unknown Provider".to_string()
+                        "Unknown Provider".to_string(),
                     ));
                 }
             }
@@ -1159,9 +1194,15 @@ impl App {
                 }
             });
 
+        let model_id_for_title_compute = self
+            .current_chat_profile
+            .model_ids
+            .get(0)
+            .cloned()
+            .ok_or(anyhow::anyhow!("No model id found for title computation"))?;
         // todo maybe eliminate this clone? might not be possible
         let curr_messages = self.current_messages.clone();
-        for (idx, (model_id, messages)) in curr_messages.iter().enumerate() {
+        for (model_id, messages) in curr_messages.iter() {
             // these could be done concurrently, but the task spawning shouldnt take long enough to warrant that
             info!("Spawning inference task for model id: {}", model_id);
             self.spawn_inference_task(
@@ -1171,7 +1212,7 @@ impl App {
                 chat_id,
                 messages.clone(),
                 content.clone(),
-                idx == 0 && generate_title, // only generate title if chat is new and with the first model
+                model_id == &model_id_for_title_compute && generate_title, // only generate title if chat is new and with the first model
             )
             .await;
         }
@@ -1194,7 +1235,7 @@ impl App {
                 // Remove the completed join handle
                 self.inference_in_progress_by_message_and_model
                     .remove(&(origin_message_id, model_id));
-                
+
                 // This serves only to update the messages in memory for the current chat
                 // The DB writes were already done by the tokio task that did the infernece
                 if chat_id == self.current_chat.id {
@@ -1211,11 +1252,13 @@ impl App {
                     let origin_message_idx = messages
                         .iter()
                         .position(|message| message.id == origin_message_id);
-                        
+
                     let insert_idx = if let Some(insert_idx) = origin_message_idx {
                         insert_idx + 1
                     } else {
-                        error!("Origin message id not found in current messages, this should not happen");
+                        error!(
+                            "Origin message id not found in current messages, this should not happen"
+                        );
                         messages.len()
                     };
 
@@ -1224,7 +1267,9 @@ impl App {
                     // if the current message index <= the insert position, we need to increment it so
                     // the user isn't suddenly taken to a different message. This would only happen
                     // if the user has more than one pending inference request.
-                    if let Some(curr_index) = self.current_message_index.get_mut(&model_id) && *curr_index >= insert_idx {
+                    if let Some(curr_index) = self.current_message_index.get_mut(&model_id)
+                        && *curr_index >= insert_idx
+                    {
                         *curr_index = *curr_index + 1;
                     }
                 }
@@ -1598,7 +1643,7 @@ impl App {
         // Any key press dismisses the error dialog and goes back to chat history
         self.state = AppState::Normal;
         self.unavailable_models_info.clear();
-        
+
         // Try to find a chat that has all available models
         // If the current chat is invalid, we stay on it but the user can navigate away
         Ok(())
