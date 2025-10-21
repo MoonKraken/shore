@@ -703,7 +703,12 @@ impl App {
                             .get(&self.current_chat_profile.model_ids[self.current_model_idx]);
                         let message = messages
                             .and_then(|messages| messages.get(*selection_idx as usize))
-                            .and_then(|message| message.content.clone())
+                            .map(|message| {
+                                message
+                                    .content
+                                    .clone()
+                                    .unwrap_or(message.error.clone().unwrap_or_default()) // if there was no content, copy the error
+                            })
                             .unwrap_or_default();
 
                         // Copy message content to clipboard
