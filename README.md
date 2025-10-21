@@ -1,3 +1,5 @@
+![Shore Terminal Interface](shore-hero.png)
+
 # Shore
 
 Shore is a terminal based chatbot interface that is simultaneously minimalist, productive, and aesthetically pleasing. [Read the docs](https://moonkraken.github.io/shore/gettingstarted/about/)
