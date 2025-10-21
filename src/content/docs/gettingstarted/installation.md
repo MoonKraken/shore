@@ -11,20 +11,16 @@ Shore reads provider API keys on launch from its shell environment. To submit pr
 | OpenAI | `OPENAI_API_KEY` |
 | Anthropic | `ANTHROPIC_API_KEY` |
 | Groq | `GROQ_API_KEY` |
+| xAI | `XAI_API_KEY` |
+| Perplexity | `SONAR_API_KEY` |
 
 Example:
 ```zsh
 export HF_TOKEN=[your token here] 
 ```
 
-### With Cargo
+### Install Shore with Cargo
 ```zsh
 cargo install shore
 ```
-### macOS
-
-Using [Homebrew](https://brew.sh/):
-```zsh
-TODO update this
-brew install tap/shore/whatever
-```
+*More installation options will be available soon - Homebrew, etc*
