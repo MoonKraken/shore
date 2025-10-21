@@ -46,8 +46,7 @@ pub trait ProviderClient: Send + Sync {
         &self,
         model: &str,
         system_prompt: &str,
-        prompt: GenerationRequest,
-        prior_conversation: &Vec<ChatMessage>,
+        conversation: &Vec<ChatMessage>,
         available_tools: Vec<&dyn Tool>, // this is a list of tools that the model can use to help with the prompt
         remove_think_tokens: bool,
     ) -> Result<GenerationResult>;

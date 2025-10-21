@@ -16,8 +16,7 @@ fn chat_role_to_message_role(chat_role: &ChatRole) -> MessageRole {
 fn create_chat_request(
     model: &str,
     system_prompt: &str,
-    prior_conversation: &[ChatMessage],
-    generation_request: &GenerationRequest,
+    conversation: &[ChatMessage],
     available_tools: &[&dyn crate::model::tool::Tool],
 ) -> Result<ChatCompletionRequest> {
     let mut messages = Vec::new();
@@ -34,7 +33,7 @@ fn create_chat_request(
     }
 
     // Add prior conversation messages
-    for chat_msg in prior_conversation {
+    for chat_msg in conversation {
         // this conversion could be done by implementing From<ToolCallRequest> for ToolCall, but the orphan rule makes that difficult
         let tool_calls: Option<Vec<ToolCall>> = if let Some(tool_calls) = chat_msg.tool_calls.as_ref() {
             // Vec<ToolCallRequest> doesn't play nice with Sqlx for some reason, so we store it as a string and deserialize it here instead
@@ -59,30 +58,6 @@ fn create_chat_request(
             tool_call_id: chat_msg.tool_call_id.clone(),
         });
     }
-
-    // Add the current prompt - in the case of tool results, that could be multiple messages
-    match generation_request {
-        GenerationRequest::Prompt(p) => {
-            messages.push(ChatCompletionMessage {
-                role: MessageRole::user,
-                content: chat_completion::Content::Text(p.clone()),
-                name: None,
-                tool_calls: None,
-                tool_call_id: None,
-            });
-        },
-        GenerationRequest::ToolResults(tool_results) => {
-            messages.extend(tool_results.into_iter().map(|(tool_call_id, name, result)| {
-                ChatCompletionMessage {
-                    role: MessageRole::user,
-                    content: chat_completion::Content::Text(result.clone()),
-                    name: Some(name.clone()),
-                    tool_calls: None,
-                    tool_call_id: Some(tool_call_id.clone()),
-                }
-            }));
-        }
-    };
 
     let mut res = ChatCompletionRequest::new(model.to_string(), messages);
     if !available_tools.is_empty() {
@@ -125,8 +100,7 @@ impl ProviderClient for OpenAIProvider {
         &self, 
         model: &str,
         system_prompt: &str,
-        generation_request: GenerationRequest, 
-        prior_conversation: &Vec<ChatMessage>,
+        conversation: &Vec<ChatMessage>,
         available_tools: Vec<&dyn crate::model::tool::Tool>,
         remove_think_tokens: bool,
     ) -> Result<GenerationResult>
@@ -142,11 +116,11 @@ impl ProviderClient for OpenAIProvider {
         let request = create_chat_request(
             model,
             system_prompt,
-            &prior_conversation,
-            &generation_request,
+            &conversation,
             &available_tools,
         )?;
 
+        info!("Sending completion request with messages: {:?}", &request.messages);
         let response = client.chat_completion(request).await?;
 
         let choice = response.choices.into_iter().next()

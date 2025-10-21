@@ -1180,31 +1180,29 @@ impl App {
         // Update the message with the actual ID from the database
         user_message.id = user_message_id;
 
-        let message_2 = user_message.clone();
-        self.current_messages
-            .iter_mut()
-            .for_each(|(model_id, messages)| {
-                info!(
-                    "Adding message to current messages for model id: {}",
-                    model_id
-                );
-                messages.push(message_2.clone());
-                // auto scroll the user to the message they just submitted
-                // for all models
-                if let Some(current_idx) = self.current_message_index.get_mut(&model_id) {
-                    *current_idx = messages.len() - 1;
-                    if let Some(current_chunk_idx) = self.current_chunk_idx.get_mut(&model_id) {
-                        *current_chunk_idx = 0;
-                    }
-                }
-            });
-
         let model_id_for_title_compute = self
             .current_chat_profile
             .model_ids
             .get(0)
             .cloned()
             .ok_or(anyhow::anyhow!("No model id found for title computation"))?;
+
+        for (model_id, messages) in self.current_messages.iter_mut() {
+            info!(
+                "Adding message to current messages for model id: {}",
+                model_id
+            );
+            messages.push(user_message.clone());
+            // auto scroll the user to the message they just submitted
+            // for all models
+            if let Some(current_idx) = self.current_message_index.get_mut(&model_id) {
+                *current_idx = messages.len() - 1;
+                if let Some(current_chunk_idx) = self.current_chunk_idx.get_mut(&model_id) {
+                    *current_chunk_idx = 0;
+                }
+            }
+        }
+
         // todo maybe eliminate this clone? might not be possible
         let curr_messages = self.current_messages.clone();
         for (model_id, messages) in curr_messages.iter() {
@@ -1215,8 +1213,9 @@ impl App {
                 user_message_id,
                 user_message.dt,
                 chat_id,
-                messages.clone(),
-                content.clone(),
+                // in cases where there is already a joinhandle, we actually only need the most recent message
+                // instead of cloning the entire conversation. this is an area of future optimization
+                messages.clone(), 
                 model_id == &model_id_for_title_compute && generate_title, // only generate title if chat is new and with the first model
             )
             .await;
@@ -1327,8 +1326,7 @@ impl App {
         user_message_id: i64,
         user_message_dt: i64,
         chat_id: i64,
-        prior_conversation: Vec<ChatMessage>,
-        new_prompt: String,
+        conversation: Vec<ChatMessage>,
         generate_title: bool,
     ) {
         info!(
@@ -1396,25 +1394,33 @@ impl App {
             let mut current_conversation: Vec<ChatMessage> = if let Some(existing_handle) =
                 prereq_handle
             {
-                // if the prerequisite handle fails, just ignore it because we cant get the prompt or prior conversation
                 match existing_handle.await {
-                    Ok(conversation) => conversation,
+                    Ok(mut joinhandle_conversation) => { 
+                        if let Some(recent_prompt_message) = conversation.into_iter().last() {
+                            // the joinhandle returns the conversation up to the most recent user message, we need to add it here
+                            joinhandle_conversation.push(recent_prompt_message);
+                            joinhandle_conversation
+                        } else {
+                            error!("couldnt get lat message of conversation, this should never happen");
+                            joinhandle_conversation
+                        }
+                    },
                     Err(_) => {
+                        // if the prerequisite handle fails, just ignore it because we cant get the prompt or prior conversation
                         error!(
                             "Prerequisite handle failed, ignoring. This shouldn't really happen."
                         );
-                        prior_conversation
+                        conversation
                     }
                 }
             } else {
-                prior_conversation
+                conversation
             };
 
             let result = provider_client
                 .run(
                     &model.model,
                     "You are a helpful assistant.", // Default system prompt for now
-                    crate::provider::provider::GenerationRequest::Prompt(new_prompt),
                     &current_conversation,
                     vec![], // No tools for now
                     false,  // Don't remove think tokens
@@ -1459,14 +1465,14 @@ impl App {
             current_conversation.push(new_assistant_message);
 
             if generate_title {
-                let current_conversation_clone = current_conversation.clone();
+                let mut current_conversation_clone = current_conversation.clone();
+                current_conversation_clone.push(ChatMessage::new_user_message(chat_id, "Generate a concise title for the above conversation. It should be no more than 6 words.".to_string()));
                 tokio::spawn(async move {
                     info!("Spawning title inference task for model id: {}", model_id);
                     let title_result = provider_client
                         .run(
                             &model.model,
                             "You are a conversation title generator.", // Default system prompt for now
-                            crate::provider::provider::GenerationRequest::Prompt("Generate a concise title for the above conversation. It should be no more than 6 words.".to_string()),
                             &current_conversation_clone,
                             vec![], // No tools for now
                             false,  // Don't remove think tokens
