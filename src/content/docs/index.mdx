@@ -28,8 +28,8 @@ import heroImage from '../../assets/shore-hero.png';
   }
 `}</style>
 
-<div class="flex flex-row place-items-center overflow-hidden">
-<div class="basis-2/5 flex-none">
+<div class="flex md:flex-row flex-col place-items-center overflow-hidden">
+<div class="md:basis-2/5 flex-none">
 	<h1>Shore</h1>
 	<p>LLM chat in the terminal. Open source. Vendor neutral.</p>
 	<div>
@@ -37,7 +37,7 @@ import heroImage from '../../assets/shore-hero.png';
 		<LinkButton icon="star" variant="secondary" href="https://www.github.com/MoonKraken/shore">Star on Github</LinkButton>
 	</div>
 	</div>
-  <div class="basis-3/5 shrink min-w-0">
+  <div class="md:basis-3/5 shrink min-w-0">
     <Image src={heroImage} alt="Shore - Terminal based LLM chat" widths={[400, 800, 1200]} sizes="(max-width: 768px) 100vw, 50vw" />
   </div>
 </div>
