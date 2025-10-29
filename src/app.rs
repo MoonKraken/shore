@@ -10,7 +10,7 @@ use crate::ui::*;
 use anyhow::Result;
 use copypasta::{ClipboardContext, ClipboardProvider};
 use crossterm::{
-    event::{Event, EventStream, KeyCode, KeyEvent, KeyModifiers},
+    event::{Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -354,7 +354,9 @@ impl App {
                 maybe_event = event_stream.next() => {
                     match maybe_event {
                         Some(Ok(Event::Key(key))) => {
-                            self.handle_key_event(key).await?;
+                            if key.kind == KeyEventKind::Press || key.kind == KeyEventKind::Repeat {
+                                self.handle_key_event(key).await?;
+                            }
                         }
                         Some(Err(e)) => {
                             error!("Error reading terminal event: {:?}", e);
