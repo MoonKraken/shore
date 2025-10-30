@@ -23,7 +23,6 @@ Shore begins in normal mode immediately upon launch. Normal mode is used for per
 | `q` | Navigate backward in chat history (supports numeric prefix) |
 | `1-9` | Prior to pressing `z` or `q`, specify number of lines to go up or down |
 | `Ctrl-h` | Show/Hide Chat History |
-| `x` or `d` | Delete chat (if exists) or clear search filter |
 
 ### Chat
 | Key | Description |
@@ -36,11 +35,13 @@ Shore begins in normal mode immediately upon launch. Normal mode is used for per
 | `[` | Highlight previous chat content item |
 | `y` | Yank (copy) Highlighted message to clipboard |
 | `cc` | Clear textarea and enter insert mode |
-| `Esc` | Clear highlight |
-| `dd` | Clear prompt text area without entering insert mode |
 | `i` | Enter insert mode |
 | `Enter` | Submit message (if prompt not empty) or clear search filter |
 | `Esc` | Clear search filter, clear selection, or exit insert mode |
+
+### Prompt Text Field
+When in insert mode, most all keystrokes are sent to the prompt text field. Many vim motions are available.
+**Refer to the (Edtui readme)[https://github.com/preiter93/edtui/blob/main/README.md] for all the prompt field editor keybindings available**
 
 ### Chat (when prompt field is empty)
 *When the prompt field is **not** empty, these control the prompt text editor. Otherwise:*
@@ -56,6 +57,7 @@ Shore begins in normal mode immediately upon launch. Normal mode is used for per
 | `gg` | Navigate to the first message of the current chat |
 | `G` | Navigate to the last message of the current chat |
 | `1-9` | Build numeric prefix for commands |
+| `x` or `d` | Delete chat (if exists) or clear search filter |
 
 ### Search
 | Key | Description |

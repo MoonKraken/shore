@@ -13,6 +13,8 @@ Shore reads provider API keys on launch from its shell environment. To submit pr
 | Groq | `GROQ_API_KEY` |
 | xAI | `XAI_API_KEY` |
 | Perplexity | `SONAR_API_KEY` |
+| MiniMax | `MINIMAX_API_KEY` |
+| zAI | `ZAI_API_KEY` |
 
 Example:
 ```zsh

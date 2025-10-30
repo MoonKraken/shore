@@ -30,6 +30,8 @@ Contributions are welcome! [Shore GitHub Repository](https://github.com/MoonKrak
 * Groq
 * xAI
 * Perplexity
+* MiniMax
+* zAI
 
 ### Locally Stored
 All conversation history, chat profiles etc are stored in a local SQLite database.  default location is `~/.shore/default.db`
