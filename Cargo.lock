@@ -1876,9 +1876,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "openai-api-rs"
+name = "openai-api-rs-prime"
 version = "7.0.1"
-source = "git+https://github.com/MoonKraken/openai-api-rs#8e859cf9ddd0dc1aac57c585c1dc9143e621030c"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc9243bc4af9e310e5b0d45c8948490f32f28cd8b1d7076706edc692c64183b1"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2565,7 +2566,7 @@ dependencies = [
  "edtui",
  "eyre",
  "futures",
- "openai-api-rs",
+ "openai-api-rs-prime",
  "ratatui",
  "serde",
  "serde_json",

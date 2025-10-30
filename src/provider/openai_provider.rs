@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use eyre::Result;
-use openai_api_rs::v1::{api::OpenAIClient, chat_completion::{self, chat_completion::ChatCompletionRequest, ChatCompletionMessage, MessageRole, Tool, ToolCall, ToolCallFunction, ToolChoiceType}, types::{Function, FunctionParameters}};
+use openai_api_rs_prime::v1::{api::OpenAIClient, chat_completion::{self, chat_completion::ChatCompletionRequest, ChatCompletionMessage, MessageRole, Tool, ToolCall, ToolCallFunction, ToolChoiceType}, types::{Function, FunctionParameters}};
 use tracing::info;
 
 use crate::{model::{chat::{ChatMessage, ChatRole}}, provider::provider::{GenerationResult, Provider, ProviderClient, ToolCallRequest}};
