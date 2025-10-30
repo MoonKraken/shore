@@ -119,10 +119,12 @@ pub struct App {
     pub last_spinner_update: Instant,
     // Vim-style numeric prefix for navigation
     pub numeric_prefix: Option<usize>,
+    pub clear_last_key_press: bool,
     // Unavailable models error state
     pub unavailable_models_info: Vec<(String, String)>, // (model_name, provider_name)
     // Track last key press for double-tap detection (e.g., 'cc' to clear)
     pub last_key_press: Option<KeyCode>,
+    pub editor_event_handler: EditorEventHandler,
 }
 
 /// Find the first viable model for the default chat profile
@@ -260,6 +262,7 @@ impl App {
 
         let chat_history = database.get_all_chats().await?;
         let mut app = Self {
+            clear_last_key_press: false,
             database: Arc::new(database),
             state,
             default_profile,
@@ -296,6 +299,7 @@ impl App {
             current_selected_message_index: None,
             unavailable_models_info: Vec::new(),
             last_key_press: None,
+            editor_event_handler: EditorEventHandler::default(),
         };
 
         // this feels a little wrong as it guarantees that we're going to
@@ -384,7 +388,18 @@ impl App {
 
     async fn handle_key_event(&mut self, key: KeyEvent) -> Result<()> {
         match self.state {
-            AppState::Normal => self.handle_normal_mode_key(key).await?,
+            AppState::Normal => {
+                self.handle_normal_mode_key(key).await?;
+                if self.textarea.mode != EditorMode::Insert {
+                    if self.clear_last_key_press {
+                        self.last_key_press = None;
+                        self.clear_last_key_press = false;
+                    } else {
+                        self.last_key_press = Some(key.code);
+                    }
+                    info!("last_key_press: {:?}", self.last_key_press);
+                }
+            },
             AppState::SearchMode => self.handle_search_mode_key(key).await?,
             AppState::ModelSelection => self.handle_model_selection_key(key).await?,
             AppState::DatabaseSelection => self.handle_database_selection_key(key).await?,
@@ -463,60 +478,27 @@ impl App {
 
         // When prompt is empty, we repurpose editor bindings for other stuff
         if is_prompt_empty {
-            // Handle double-tap keys ('c' and 'g') when prompt is empty
-            if let KeyCode::Char(current_char) = key.code
-                && (current_char == 'c' || current_char == 'g')
-            {
-                let second_press = if let Some(last_code) = self.last_key_press {
-                    if let KeyCode::Char(c) = last_code {
-                        c == current_char
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
-
-                if second_press {
-                    // Clear the textarea
-                    self.textarea = EditorState::default();
-
-                    // For 'cc', enter insert mode; for 'gg', stay in normal mode
-                    if current_char == 'c' {
-                        self.textarea.mode = EditorMode::Insert;
-                    } else {
-                        // g case
-                        info!("g second tap");
-                        if let Some(current_model_id) = self
-                            .current_chat_profile
-                            .model_ids
-                            .get(self.current_model_idx)
-                        {
-                            let message_idx = self.current_message_index.get_mut(current_model_id);
-                            if let Some(message_idx) = message_idx {
-                                *message_idx = 0;
-                                let chunk_idx = self.current_chunk_idx.get_mut(current_model_id);
-                                if let Some(chunk_idx) = chunk_idx {
-                                    *chunk_idx = 0;
-                                }
+            match key.code {
+                KeyCode::Char('g') if self.last_key_press == Some(KeyCode::Char('g')) => {
+                    if let Some(current_model_id) = self
+                        .current_chat_profile
+                        .model_ids
+                        .get(self.current_model_idx)
+                    {
+                        let message_idx = self.current_message_index.get_mut(current_model_id);
+                        if let Some(message_idx) = message_idx {
+                            *message_idx = 0;
+                            let chunk_idx = self.current_chunk_idx.get_mut(current_model_id);
+                            if let Some(chunk_idx) = chunk_idx {
+                                *chunk_idx = 0;
                             }
                         }
                     }
 
-                    self.last_key_press = None;
+                    self.clear_last_key_press = true;
                     self.numeric_prefix = None;
-                } else {
-                    // Record this press for potential double-tap
-                    self.last_key_press = Some(key.code);
+                    return Ok(());
                 }
-
-                return Ok(());
-            }
-
-            // Reset last key press if it's not 'c' or 'g'
-            self.last_key_press = None;
-
-            match key.code {
                 // bypass this if the user is entering a numeric prefix for navigation
                 KeyCode::Char('0') if self.numeric_prefix.is_none() => {
                     // Select the first model
@@ -685,6 +667,29 @@ impl App {
                     }
                     return Ok(());
                 }
+                KeyCode::Char('x') | KeyCode::Char('d') => {
+                    // If search is active, clear it and keep the selected entry
+                    if !self.search_query.is_empty() {
+                        self.clear_search_filter().await?;
+                    } else {
+                        let text = editor_state_to_string(&self.textarea);
+                        if !text.trim().is_empty() {
+                            let mut event_handler = EditorEventHandler::default();
+                            event_handler.on_key_event(key, &mut self.textarea);
+                        } else if !self.chat_history.is_empty() {
+                            // Only allow deleting if we have a valid chat and it's not the only chat
+                            if self.current_chat.id == 0 {
+                                self.chat_history.remove(self.chat_history_index);
+                                self.load_selected_chat().await?;
+                            } else {
+                                // Open delete confirmation dialog if this chat is actually written in the db
+                                self.state = AppState::DeleteConfirmation;
+                            }
+                        }
+                    }
+                    self.numeric_prefix = None;
+                    return Ok(())
+                }
                 _ => {}
             }
         }
@@ -837,31 +842,6 @@ impl App {
                 self.numeric_prefix = None;
             }
             KeyEvent {
-                code: KeyCode::Char('x') | KeyCode::Char('d'),
-                ..
-            } => {
-                // If search is active, clear it and keep the selected entry
-                if !self.search_query.is_empty() {
-                    self.clear_search_filter().await?;
-                } else {
-                    let text = editor_state_to_string(&self.textarea);
-                    if !text.trim().is_empty() {
-                        let mut event_handler = EditorEventHandler::default();
-                        event_handler.on_key_event(key, &mut self.textarea);
-                    } else if !self.chat_history.is_empty() {
-                        // Only allow deleting if we have a valid chat and it's not the only chat
-                        if self.current_chat.id == 0 {
-                            self.chat_history.remove(self.chat_history_index);
-                            self.load_selected_chat().await?;
-                        } else {
-                            // Open delete confirmation dialog if this chat is actually written in the db
-                            self.state = AppState::DeleteConfirmation;
-                        }
-                    }
-                }
-                self.numeric_prefix = None;
-            }
-            KeyEvent {
                 code: KeyCode::Char('/'),
                 modifiers: KeyModifiers::NONE,
                 ..
@@ -908,18 +888,20 @@ impl App {
                 }
             }
             KeyEvent {
-                code: KeyCode::Char('G') | KeyCode::Char('g'),
-                ..
-            } if !is_prompt_empty => {
-                // When prompt is not empty, send 'G' and 'g' to the editor
-                let mut event_handler = EditorEventHandler::default();
-                event_handler.on_key_event(key, &mut self.textarea);
+                 code: KeyCode::Char('c'),
+                 ..
+            } if self.last_key_press == Some(KeyCode::Char('c')) => {
+                // clear the textarea and place the user in insert mode
+                self.textarea = EditorState::default();
+                self.textarea.mode = EditorMode::Insert;
+                self.numeric_prefix = None;
+                self.clear_last_key_press = true;
             }
             _ => {
                 // Clear numeric prefix on any other key
                 self.numeric_prefix = None;
-                let mut event_handler = EditorEventHandler::default();
-                event_handler.on_key_event(key, &mut self.textarea);
+                self.editor_event_handler.on_key_event(key, &mut self.textarea);
+                info!("sent last key press to edtui")
             }
         }
 
