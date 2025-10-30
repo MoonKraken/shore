@@ -41,7 +41,7 @@ Shore begins in normal mode immediately upon launch. Normal mode is used for per
 
 ### Prompt Text Field
 When in insert mode, most all keystrokes are sent to the prompt text field. Many vim motions are available.
-**Refer to the (Edtui readme)[https://github.com/preiter93/edtui/blob/main/README.md] for all the prompt field editor keybindings available**
+**Refer to the [Edtui readme](https://github.com/preiter93/edtui/blob/main/README.md) for all the prompt field editor keybindings available**
 
 ### Chat (when prompt field is empty)
 *When the prompt field is **not** empty, these control the prompt text editor. Otherwise:*
