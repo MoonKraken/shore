@@ -157,7 +157,8 @@ impl ModelSelectModal {
                 self.last_key = None;
             }
             KeyCode::Char('/') => {
-                // Enter search mode
+                // Clear any existing search terms and enter search mode
+                self.search_query.clear();
                 self.dialog_mode = ModelDialogMode::Search;
                 self.numeric_prefix = None;
                 self.last_key = None;
