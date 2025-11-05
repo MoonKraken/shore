@@ -6,6 +6,8 @@ Shore is a terminal based chatbot interface that is simultaneously minimalist, p
 
 Conversations are stored locally in a SQLite database, by default in `~/.shore/default.db`
 
+[Watch Usage Video on YouTube](https://youtu.be/UAK6dQbnknE)
+
 ## Installation
 1. `cargo install shore`
 1. Set **at least** one API key
