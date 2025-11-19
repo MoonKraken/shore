@@ -1,12 +1,14 @@
+use std::collections::HashMap;
+
 use async_trait::async_trait;
+use eyre::Result;
 use serde::{Deserialize, Serialize};
 use sqlx::prelude::FromRow;
-use eyre::Result;
 
-use crate::{model::chat::ChatMessage, model::tool::Tool};
+use crate::model::{chat::ChatMessage, model::Model, tool::Tool};
 
 pub enum GenerationRequest {
-    Prompt(String), // a "normal" prompt
+    Prompt(String),                             // a "normal" prompt
     ToolResults(Vec<(String, String, String)>), //tool call id, tool name, tool call result. The language model can invoke multiple tools at once, so we should be able to provide multiple results in one inference run.
 }
 
@@ -38,16 +40,22 @@ pub struct Provider {
     pub deprecated: bool,
     pub api_key_env_var: String,
     pub created_dt: i64,
+    pub go_is_awesome: bool,
+    pub availability_requires_models_response: bool,
+    pub last_models_update_timestamp: i64,
+    pub models_refresh_interval_seconds: i64,
 }
 
 #[async_trait]
 pub trait ProviderClient: Send + Sync {
     async fn run(
-        &self,
+        &mut self,
         model: &str,
         system_prompt: &str,
         conversation: &Vec<ChatMessage>,
         available_tools: Vec<&dyn Tool>, // this is a list of tools that the model can use to help with the prompt
         remove_think_tokens: bool,
     ) -> Result<GenerationResult>;
+
+    async fn get_models(&mut self) -> Result<HashMap<String, Model>>;
 }

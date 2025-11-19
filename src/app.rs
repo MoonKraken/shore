@@ -5,6 +5,7 @@ use crate::model::chat::ChatProfile;
 use crate::model::model::Model;
 use crate::model_select_modal::{ModalResult, ModelSelectModal, ModelSelectionMode};
 use crate::provider::OpenAIProvider;
+use crate::provider::provider::Provider;
 use crate::provider::provider::ProviderClient;
 use crate::ui::*;
 use anyhow::Result;
@@ -26,7 +27,7 @@ use std::collections::HashSet;
 use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 use tokio::task::JoinHandle;
 use tracing::error;
 use tracing::info;
@@ -77,6 +78,12 @@ pub enum InferenceEvent {
         chat_id: i64,
         title: String,
     },
+    ModelsRefreshed {
+        added_models: Vec<Model>,
+        removed_model_ids: Vec<i64>,
+        temporarily_unavailable_models: Vec<Model>,
+        providers_to_remove: Vec<i64>,
+    },
 }
 
 // TODO extract everything written to by the rendering process
@@ -106,12 +113,13 @@ pub struct App {
     pub title_inference_in_progress_by_chat: HashSet<i64>,
     pub inference_in_progress_by_message_and_model: HashSet<(i64, i64)>, // message and model id -> handle
     pub inference_handles_by_chat_and_model: HashMap<(i64, i64), JoinHandle<Vec<ChatMessage>>>, // chat and model id -> handle
-    pub provider_clients: HashMap<i64, Arc<dyn ProviderClient>>, // provider_id -> provider client
-    pub provider_api_keys_set: HashMap<i64, bool>,               // provider_id -> api key set
-    pub cached_provider_data: Vec<(String, String, bool)>,       // (name, env_var, is_set)
-    pub available_models: HashMap<i64, Model>,                   // model_id -> model
+    pub provider_clients: HashMap<i64, Arc<Mutex<dyn ProviderClient>>>, // provider_id -> provider client
+    pub provider_api_keys_set: HashMap<i64, bool>, // provider_id -> api key set
+    pub providers_marked_down: HashSet<i64>,       // provider ids
+    pub cached_provider_data: Vec<(String, String, bool)>, // (name, env_var, is_set)
+    pub available_models: HashMap<i64, Model>,     // model_id -> model
     pub all_models: HashMap<i64, Model>,
-    pub provider_names: HashMap<i64, String>, // provider_id -> provider name
+    pub providers: HashMap<i64, Provider>, // provider_id -> provider name
     // Model selection dialog state
     pub model_select_modal: Option<ModelSelectModal>,
     // Spinner animation state
@@ -155,6 +163,172 @@ async fn find_first_viable_model(database: &Database) -> Result<Option<i64>> {
 }
 
 impl App {
+    /// Refreshes models from provider APIs and syncs with the database.
+    ///
+    /// This function performs the following operations:
+    /// 1. Identifies providers that need model refresh based on:
+    ///    - `availability_requires_models_response` flag (e.g., Ollama)
+    ///    - `models_from_list` flag and refresh interval expiration
+    /// 2. Builds O(1) lookup structure: provider_id -> (model_name -> Model)
+    /// 3. Calls each provider's `get_models()` API
+    /// 4. Detects new and removed models by comparing API response with lookup structure
+    /// 5. Atomically syncs changes to the database (inserts new, deprecates removed)
+    /// 6. Updates provider's `last_models_update_timestamp`
+    /// 7. Sends `ModelsRefreshed` event with added and removed models
+    ///
+    /// # Arguments
+    /// * `database` - Database connection wrapped in Arc for thread-safe sharing
+    /// * `providers` - Map of provider IDs to Provider structs
+    /// * `provider_clients` - Map of provider IDs to API clients
+    /// * `all_models` - Current in-memory models used for change detection
+    /// * `event_tx` - Channel to send ModelsRefreshed event back to the app
+    ///
+    /// # Transaction Guarantees
+    /// For each provider, all model changes and timestamp updates occur in a single
+    /// atomic database transaction, ensuring consistency.
+    pub async fn refresh_models_with_provider_api(
+        database: Arc<Database>,
+        providers: HashMap<i64, Provider>,
+        provider_clients: HashMap<i64, Arc<Mutex<dyn ProviderClient>>>,
+        all_models: HashMap<i64, Model>,
+        event_tx: mpsc::UnboundedSender<InferenceEvent>,
+    ) {
+        let now = chrono::Utc::now().timestamp();
+        let providers_to_refresh: Vec<_> = providers
+            .values()
+            .filter_map(|provider| {
+                if provider.availability_requires_models_response {
+                    return Some(provider.clone());
+                }
+
+                if !provider.models_from_list {
+                    return None;
+                }
+
+                let refresh_threshold_exceeded = now
+                    > provider.last_models_update_timestamp
+                        + provider.models_refresh_interval_seconds;
+
+                if refresh_threshold_exceeded {
+                    Some(provider.clone())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        // Build lookup structure: provider_id -> (model_name -> Model)
+        // This allows O(1) lookups inside the loop instead of O(n) filtering per provider
+        let mut models_by_provider: HashMap<i64, HashMap<String, Model>> = HashMap::new();
+        for model in all_models.values() {
+            models_by_provider
+                .entry(model.provider_id)
+                .or_insert_with(HashMap::new)
+                .insert(model.model.clone(), model.clone());
+        }
+
+        let mut all_added_models = Vec::new();
+        let mut all_removed_model_ids = Vec::new();
+        let mut providers_to_remove = Vec::new();
+        let mut temporarily_unavailable_models = Vec::new();
+
+        for provider in providers_to_refresh {
+            info!(
+                "Refreshing models for provider: {} (ID: {})",
+                provider.name, provider.id
+            );
+
+            // Get existing models for this provider (O(1) lookup)
+            let existing_models_map = models_by_provider
+                .get(&provider.id)
+                .cloned()
+                .unwrap_or_default();
+
+            if let Some(client) = provider_clients.get(&provider.id) {
+                match client.lock().await.get_models().await {
+                    Ok(models_map) => {
+                        info!(
+                            "Successfully fetched {} models from provider {}",
+                            models_map.len(),
+                            provider.name
+                        );
+
+                        // Detect new models that need inserting (models not in existing_models_map)
+                        let mut models_to_insert = Vec::new();
+                        for (_model_key, model_from_api) in &models_map {
+                            if !existing_models_map.contains_key(&model_from_api.model) {
+                                models_to_insert.push(model_from_api.clone());
+                            }
+                        }
+
+                        // Detect removed models (exist in DB but not in API response)
+                        let fetched_model_names: HashSet<String> =
+                            models_map.values().map(|m| m.model.clone()).collect();
+
+                        let removed_model_ids: Vec<i64> = existing_models_map
+                            .iter()
+                            .filter(|(name, _)| !fetched_model_names.contains(*name))
+                            .map(|(_, model)| model.id)
+                            .collect();
+
+                        // Perform atomic transaction to insert new models, deprecate removed ones, and update timestamp
+                        match database
+                            .sync_provider_models(
+                                provider.id,
+                                models_to_insert,
+                                removed_model_ids.clone(),
+                                now,
+                            )
+                            .await
+                        {
+                            Ok((added_models, removed_ids)) => {
+                                info!(
+                                    "Synced models for provider {}: {} added, {} removed",
+                                    provider.name,
+                                    added_models.len(),
+                                    removed_ids.len()
+                                );
+
+                                all_removed_model_ids.extend(removed_ids);
+                                all_added_models.extend(added_models);
+                            }
+                            Err(e) => {
+                                error!(
+                                    "Failed to sync models for provider {}: {}",
+                                    provider.name, e
+                                );
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to fetch models from provider {}. It will be marked as unavailable: {}",
+                            provider.name, e
+                        );
+
+                        // remove from available models
+
+                        let models: Vec<Model> = existing_models_map.values().cloned().collect();
+                        temporarily_unavailable_models.extend(models);
+
+                        // we actually need to remove the provider from the list of providers if this happens
+                        providers_to_remove.push(provider.id);
+                    }
+                }
+            }
+        }
+
+        // Notify the app that models have been refreshed
+        if let Err(e) = event_tx.send(InferenceEvent::ModelsRefreshed {
+            added_models: all_added_models,
+            removed_model_ids: all_removed_model_ids,
+            temporarily_unavailable_models,
+            providers_to_remove,
+        }) {
+            error!("Failed to send ModelsRefreshed event: {}", e);
+        }
+    }
+
     pub async fn new(
         database: Database,
     ) -> Result<(Self, mpsc::UnboundedReceiver<InferenceEvent>)> {
@@ -163,25 +337,26 @@ impl App {
         let mut provider_clients = HashMap::new();
         let mut provider_api_keys_set = HashMap::new();
         let mut cached_provider_data = Vec::new();
-        let mut provider_names = HashMap::new();
+        let mut providers = HashMap::new();
         for provider_record in provider_records {
-            let api_key_set = std::env::var(&provider_record.api_key_env_var).is_ok();
-            if api_key_set {
+            let api_key_not_missing = provider_record.api_key_env_var.is_empty()
+                || std::env::var(&provider_record.api_key_env_var).is_ok();
+            if api_key_not_missing {
                 // For now, all providers are OpenAI-compatible, but we can add other types later
                 info!(
                     "Creating OpenAI provider client for provider {:?}",
                     provider_record
                 );
-                let provider_client: Arc<dyn ProviderClient> =
-                    Arc::new(OpenAIProvider::new(provider_record.clone()));
+                let provider_client: Arc<Mutex<dyn ProviderClient>> =
+                    Arc::new(Mutex::new(OpenAIProvider::new(provider_record.clone())));
                 provider_clients.insert(provider_record.id, provider_client);
             }
-            provider_api_keys_set.insert(provider_record.id, api_key_set);
-            provider_names.insert(provider_record.id, provider_record.name.clone());
+            provider_api_keys_set.insert(provider_record.id, api_key_not_missing);
+            providers.insert(provider_record.id, provider_record.clone());
             cached_provider_data.push((
                 provider_record.name,
                 provider_record.api_key_env_var,
-                api_key_set,
+                api_key_not_missing,
             ));
         }
 
@@ -291,7 +466,7 @@ impl App {
             cached_provider_data,
             available_models,
             all_models,
-            provider_names,
+            providers,
             model_select_modal: None,
             spinner_frame: 0,
             last_spinner_update: Instant::now(),
@@ -300,6 +475,7 @@ impl App {
             unavailable_models_info: Vec::new(),
             last_key_press: None,
             editor_event_handler: EditorEventHandler::default(),
+            providers_marked_down: HashSet::new(),
         };
 
         // this feels a little wrong as it guarantees that we're going to
@@ -399,7 +575,7 @@ impl App {
                     }
                     info!("last_key_press: {:?}", self.last_key_press);
                 }
-            },
+            }
             AppState::SearchMode => self.handle_search_mode_key(key).await?,
             AppState::ModelSelection => self.handle_model_selection_key(key).await?,
             AppState::DatabaseSelection => self.handle_database_selection_key(key).await?,
@@ -688,7 +864,7 @@ impl App {
                         }
                     }
                     self.numeric_prefix = None;
-                    return Ok(())
+                    return Ok(());
                 }
                 _ => {}
             }
@@ -711,10 +887,7 @@ impl App {
                         let message = messages
                             .and_then(|messages| messages.get(*selection_idx as usize))
                             .and_then(|message| {
-                                message
-                                    .content
-                                    .clone()
-                                    .or(message.error.clone()) // if there was no content, copy the error
+                                message.content.clone().or(message.error.clone()) // if there was no content, copy the error
                             })
                             .unwrap_or_default();
 
@@ -888,8 +1061,8 @@ impl App {
                 }
             }
             KeyEvent {
-                 code: KeyCode::Char('c'),
-                 ..
+                code: KeyCode::Char('c'),
+                ..
             } if self.last_key_press == Some(KeyCode::Char('c')) => {
                 // clear the textarea and place the user in insert mode
                 self.textarea = EditorState::default();
@@ -900,7 +1073,8 @@ impl App {
             _ => {
                 // Clear numeric prefix on any other key
                 self.numeric_prefix = None;
-                self.editor_event_handler.on_key_event(key, &mut self.textarea);
+                self.editor_event_handler
+                    .on_key_event(key, &mut self.textarea);
                 info!("sent last key press to edtui")
             }
         }
@@ -1108,9 +1282,9 @@ impl App {
                 // Model is not available, get model info
                 if let Some(model) = self.all_models.get(&model_id) {
                     let provider_name = self
-                        .provider_names
+                        .providers
                         .get(&model.provider_id)
-                        .cloned()
+                        .map(|p| p.name.clone())
                         .unwrap_or_else(|| "Unknown Provider".to_string());
                     unavailable_models.push((model.model.clone(), provider_name));
                 } else {
@@ -1199,7 +1373,7 @@ impl App {
                 chat_id,
                 // in cases where there is already a joinhandle, we actually only need the most recent message
                 // instead of cloning the entire conversation. this is an area of future optimization
-                messages.clone(), 
+                messages.clone(),
                 model_id == &model_id_for_title_compute && generate_title, // only generate title if chat is new and with the first model
             )
             .await;
@@ -1286,6 +1460,63 @@ impl App {
                         break;
                     }
                 }
+            }
+            InferenceEvent::ModelsRefreshed {
+                added_models,
+                removed_model_ids,
+                temporarily_unavailable_models,
+                providers_to_remove,
+            } => {
+                info!(
+                    "Models refreshed: {} added, {} removed",
+                    added_models.len(),
+                    removed_model_ids.len()
+                );
+
+                // Remove deleted models
+                for model_id in removed_model_ids {
+                    self.all_models.remove(&model_id);
+                    self.available_models.remove(&model_id);
+                }
+
+                // Add new models
+                for model in added_models {
+                    self.all_models.insert(model.id, model.clone());
+
+                    // Only add to available_models if the provider has an API key set
+                    if *self
+                        .provider_api_keys_set
+                        .get(&model.provider_id)
+                        .unwrap_or(&false)
+                    {
+                        self.available_models.insert(model.id, model);
+                    }
+                }
+
+                // Remove providers with no API key set
+                for provider_id in providers_to_remove.into_iter() {
+                    info!(
+                        "provider {} was unresponsive so it was removed",
+                        provider_id
+                    );
+                    self.provider_api_keys_set.remove(&provider_id);
+                    self.provider_clients.remove(&provider_id);
+                    self.providers_marked_down.insert(provider_id);
+                }
+
+                for model in temporarily_unavailable_models.into_iter() {
+                    info!(
+                        "model {} marked temporarily unavailable due to its provider being marked down",
+                        &model.model
+                    );
+                    self.available_models.remove(&model.id);
+                }
+
+                info!(
+                    "Total models: {}, available models: {}",
+                    self.all_models.len(),
+                    self.available_models.len()
+                );
             }
         }
         Ok(())
@@ -1379,16 +1610,18 @@ impl App {
                 prereq_handle
             {
                 match existing_handle.await {
-                    Ok(mut joinhandle_conversation) => { 
+                    Ok(mut joinhandle_conversation) => {
                         if let Some(recent_prompt_message) = conversation.into_iter().last() {
                             // the joinhandle returns the conversation up to the most recent user message, we need to add it here
                             joinhandle_conversation.push(recent_prompt_message);
                             joinhandle_conversation
                         } else {
-                            error!("couldnt get lat message of conversation, this should never happen");
+                            error!(
+                                "couldnt get lat message of conversation, this should never happen"
+                            );
                             joinhandle_conversation
                         }
-                    },
+                    }
                     Err(_) => {
                         // if the prerequisite handle fails, just ignore it because we cant get the prompt or prior conversation
                         error!(
@@ -1402,6 +1635,8 @@ impl App {
             };
 
             let result = provider_client
+                .lock()
+                .await
                 .run(
                     &model.model,
                     "You are a helpful assistant.", // Default system prompt for now
@@ -1454,6 +1689,8 @@ impl App {
                 tokio::spawn(async move {
                     info!("Spawning title inference task for model id: {}", model_id);
                     let title_result = provider_client
+                        .lock()
+                        .await
                         .run(
                             &model.model,
                             "You are a conversation title generator.", // Default system prompt for now
@@ -1506,11 +1743,16 @@ impl App {
         };
 
         // Create the modal with clones of the data it needs
+        let provider_names: HashMap<i64, String> = self
+            .providers
+            .iter()
+            .map(|(id, provider)| (*id, provider.name.clone()))
+            .collect();
         let modal = ModelSelectModal::new(
             mode,
             current_models,
             self.available_models.clone(),
-            self.provider_names.clone(),
+            provider_names,
         );
 
         self.model_select_modal = Some(modal);

@@ -1,6 +1,15 @@
-use crate::{model::{chat::{Chat, ChatMessage, ChatProfile}, model::Model}, provider::provider::Provider};
+use crate::{
+    model::{
+        chat::{Chat, ChatMessage, ChatProfile},
+        model::Model,
+    },
+    provider::provider::Provider,
+};
 use anyhow::Result;
-use sqlx::{sqlite::{SqlitePool, SqliteConnectOptions}, Row, Sqlite, Pool, QueryBuilder};
+use sqlx::{
+    Pool, QueryBuilder, Row, Sqlite,
+    sqlite::{SqliteConnectOptions, SqlitePool},
+};
 use std::path::Path;
 use tracing::{info, instrument};
 
@@ -16,7 +25,7 @@ impl Database {
             .filename(&db_path)
             .create_if_missing(true)
             .foreign_keys(true); // Enable foreign key constraints
-            
+
         let pool = SqlitePool::connect_with(connection_options).await?;
 
         let db = Database { pool };
@@ -24,7 +33,6 @@ impl Database {
 
         Ok(db)
     }
-
 
     #[instrument(level = "info", skip(self))]
     pub async fn create_chat(&self, title: Option<String>) -> Result<i64> {
@@ -40,27 +48,23 @@ impl Database {
 
     #[instrument(level = "info", skip(self))]
     pub async fn get_recent_chats(&self, limit: i32) -> Result<Vec<Chat>> {
-        let chats = sqlx::query_as::<_, Chat>(
-            "SELECT id, dt, title FROM chat ORDER BY dt DESC LIMIT ?"
-        )
-        .bind(limit)
-        .fetch_all(&self.pool)
-        .await?;
+        let chats =
+            sqlx::query_as::<_, Chat>("SELECT id, dt, title FROM chat ORDER BY dt DESC LIMIT ?")
+                .bind(limit)
+                .fetch_all(&self.pool)
+                .await?;
 
         Ok(chats)
     }
 
     #[instrument(level = "info", skip(self))]
     pub async fn get_all_chats(&self) -> Result<Vec<Chat>> {
-        let chats = sqlx::query_as::<_, Chat>(
-            "SELECT id, dt, title FROM chat ORDER BY dt DESC"
-        )
-        .fetch_all(&self.pool)
-        .await?;
+        let chats = sqlx::query_as::<_, Chat>("SELECT id, dt, title FROM chat ORDER BY dt DESC")
+            .fetch_all(&self.pool)
+            .await?;
 
         Ok(chats)
     }
-    
 
     #[instrument(level = "info", skip(self))]
     pub async fn get_chat_messages(&self, chat_id: i64) -> Result<Vec<ChatMessage>> {
@@ -99,7 +103,7 @@ impl Database {
     #[instrument(level = "info", skip(self))]
     pub async fn get_providers(&self) -> Result<Vec<Provider>> {
         let providers = sqlx::query_as::<_, Provider>(
-            "SELECT id, name, base_url, disabled, deprecated, api_key_env_var, created_dt FROM provider WHERE NOT deprecated ORDER BY id ASC"
+            "SELECT id, name, base_url, disabled, deprecated, api_key_env_var, created_dt, models_from_list, availability_requires_models_response, last_models_update_timestamp, models_refresh_interval_seconds FROM provider WHERE NOT deprecated ORDER BY id ASC"
         )
         .fetch_all(&self.pool)
         .await?;
@@ -153,7 +157,7 @@ impl Database {
             FROM chat_model
             WHERE chat_id = ?
             ORDER BY display_order ASC
-            "#
+            "#,
         )
         .bind(chat_id)
         .fetch_all(&self.pool)
@@ -168,7 +172,7 @@ impl Database {
             SELECT tool_id
             FROM chat_tool
             WHERE chat_id = ?
-            "#
+            "#,
         )
         .bind(chat_id)
         .fetch_all(&self.pool)
@@ -180,19 +184,22 @@ impl Database {
     // this should only ever be called once for each chat
     #[instrument(skip_all)]
     pub async fn set_chat_models(&self, chat_id: i64, model_ids: Vec<i64>) -> Result<()> {
-        sqlx::query("DELETE FROM chat_model WHERE chat_id = ?").bind(chat_id).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM chat_model WHERE chat_id = ?")
+            .bind(chat_id)
+            .execute(&self.pool)
+            .await?;
         if model_ids.is_empty() {
             return Ok(());
         }
 
         let mut query_builder = QueryBuilder::<Sqlite>::new(
-            "INSERT INTO chat_model (chat_id, model_id, display_order) "
+            "INSERT INTO chat_model (chat_id, model_id, display_order) ",
         );
 
         query_builder.push_values(model_ids.iter().enumerate(), |mut b, (index, model_id)| {
             b.push_bind(chat_id)
-             .push_bind(model_id)
-             .push_bind(index as i64);
+                .push_bind(model_id)
+                .push_bind(index as i64);
         });
 
         query_builder.build().execute(&self.pool).await?;
@@ -205,13 +212,11 @@ impl Database {
             return Ok(());
         }
 
-        let mut query_builder = QueryBuilder::<Sqlite>::new(
-            "INSERT INTO chat_tool (chat_id, tool_id) "
-        );
+        let mut query_builder =
+            QueryBuilder::<Sqlite>::new("INSERT INTO chat_tool (chat_id, tool_id) ");
 
         query_builder.push_values(tool_ids, |mut b, tool_id| {
-            b.push_bind(chat_id)
-             .push_bind(tool_id);
+            b.push_bind(chat_id).push_bind(tool_id);
         });
 
         query_builder.build().execute(&self.pool).await?;
@@ -242,7 +247,7 @@ impl Database {
 
         // Get tool IDs for this profile
         let tool_ids: Vec<i64> = sqlx::query_scalar::<_, i64>(
-            "SELECT tool_id FROM chat_profile_tool WHERE profile_id = ?"
+            "SELECT tool_id FROM chat_profile_tool WHERE profile_id = ?",
         )
         .bind(profile_id)
         .fetch_all(&self.pool)
@@ -266,20 +271,27 @@ impl Database {
     }
 
     /// Set profile models with explicit ordering
-    pub async fn set_chat_profile_models(&self, profile_id: i64, model_ids: Vec<i64>) -> Result<()> {
-        sqlx::query("DELETE FROM chat_profile_model WHERE profile_id = ?").bind(profile_id).execute(&self.pool).await?;
+    pub async fn set_chat_profile_models(
+        &self,
+        profile_id: i64,
+        model_ids: Vec<i64>,
+    ) -> Result<()> {
+        sqlx::query("DELETE FROM chat_profile_model WHERE profile_id = ?")
+            .bind(profile_id)
+            .execute(&self.pool)
+            .await?;
         if model_ids.is_empty() {
             return Ok(());
         }
 
         let mut query_builder = QueryBuilder::<Sqlite>::new(
-            "INSERT INTO chat_profile_model (profile_id, model_id, display_order) "
+            "INSERT INTO chat_profile_model (profile_id, model_id, display_order) ",
         );
 
         query_builder.push_values(model_ids.iter().enumerate(), |mut b, (index, model_id)| {
             b.push_bind(profile_id)
-             .push_bind(model_id)
-             .push_bind(index as i64);
+                .push_bind(model_id)
+                .push_bind(index as i64);
         });
 
         query_builder.build().execute(&self.pool).await?;
@@ -289,7 +301,7 @@ impl Database {
 
     pub async fn chat_profile_exists(&self, profile_id: i64) -> Result<bool> {
         let count: i64 = sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM chat_profile_model WHERE profile_id = ?"
+            "SELECT COUNT(*) FROM chat_profile_model WHERE profile_id = ?",
         )
         .bind(profile_id)
         .fetch_one(&self.pool)
@@ -301,17 +313,25 @@ impl Database {
     pub async fn create_default_chat_profile(&self, model_id: i64) -> Result<()> {
         // Create default profile with the specified model and no tools
         self.set_chat_profile_models(0, vec![model_id]).await?;
-        
+
         // Get model details for logging
         if let Ok(models) = self.get_all_models().await {
             if let Some(model) = models.into_iter().find(|m| m.id == model_id) {
-                info!("Created default chat profile (ID 0) with model ID: {} ({})", 
-                         model.id, model.model);
+                info!(
+                    "Created default chat profile (ID 0) with model ID: {} ({})",
+                    model.id, model.model
+                );
             } else {
-                info!("Created default chat profile (ID 0) with model ID: {}", model_id);
+                info!(
+                    "Created default chat profile (ID 0) with model ID: {}",
+                    model_id
+                );
             }
         } else {
-            info!("Created default chat profile (ID 0) with model ID: {}", model_id);
+            info!(
+                "Created default chat profile (ID 0) with model ID: {}",
+                model_id
+            );
         }
 
         Ok(())
@@ -338,7 +358,7 @@ impl Database {
 
         // Use FTS5 MATCH syntax for full text search
         let search_query = format!("\"{}\"", query.replace("\"", "\"\""));
-        
+
         let chats = sqlx::query_as::<_, Chat>(
             r#"
             SELECT c.id, c.dt, c.title
@@ -347,7 +367,7 @@ impl Database {
             WHERE chat_fts MATCH ?
             ORDER BY c.dt DESC
             LIMIT ?
-            "#
+            "#,
         )
         .bind(&search_query)
         .bind(limit)
@@ -366,7 +386,7 @@ impl Database {
 
         // Use FTS5 MATCH syntax for full text search
         let search_query = format!("\"{}\"", query.replace("\"", "\"\""));
-        
+
         let chats = sqlx::query_as::<_, Chat>(
             r#"
             SELECT DISTINCT c.id, c.dt, c.title
@@ -376,7 +396,7 @@ impl Database {
             WHERE chat_message_fts MATCH ?
             ORDER BY c.dt DESC
             LIMIT ?
-            "#
+            "#,
         )
         .bind(&search_query)
         .bind(limit)
@@ -395,7 +415,7 @@ impl Database {
 
         // Use FTS5 MATCH syntax for full text search
         let search_query = format!("\"{}\"", query.replace("\"", "\"\""));
-        
+
         let chats = sqlx::query_as::<_, Chat>(
             r#"
             SELECT DISTINCT c.id, c.dt, c.title
@@ -410,7 +430,7 @@ impl Database {
             WHERE chat_message_fts MATCH ?
             ORDER BY dt DESC
             LIMIT ?
-            "#
+            "#,
         )
         .bind(&search_query)
         .bind(&search_query)
@@ -419,5 +439,69 @@ impl Database {
         .await?;
 
         Ok(chats)
+    }
+
+    /// Atomically syncs provider models with the database.
+    /// Returns (added_models, removed_model_ids) where:
+    /// - added_models includes only newly inserted models
+    /// - removed_model_ids are models that were marked as deprecated
+    #[instrument(level = "info", skip(self, models_to_insert))]
+    pub async fn sync_provider_models(
+        &self,
+        provider_id: i64,
+        models_to_insert: Vec<Model>,
+        model_ids_to_remove: Vec<i64>,
+        timestamp: i64,
+    ) -> Result<(Vec<Model>, Vec<i64>)> {
+        // Begin transaction
+        let mut tx = self.pool.begin().await?;
+
+        let mut added_models = Vec::new();
+        let created_dt = chrono::Utc::now().timestamp();
+
+        // Insert new models (caller has already filtered to only new models)
+        for model in models_to_insert {
+            let result = sqlx::query(
+                "INSERT INTO model (provider_id, model, api_type, disabled, deprecated, created_dt) VALUES (?, ?, ?, 0, 0, ?)",
+            )
+            .bind(provider_id)
+            .bind(&model.model)
+            .bind(model.api_type)
+            .bind(created_dt)
+            .execute(&mut *tx)
+            .await?;
+
+            let model_id = result.last_insert_rowid();
+
+            // Fetch the newly created model
+            let inserted_model = sqlx::query_as::<_, Model>(
+                "SELECT id, provider_id, model, api_type, disabled, deprecated, created_dt FROM model WHERE id = ?",
+            )
+            .bind(model_id)
+            .fetch_one(&mut *tx)
+            .await?;
+
+            added_models.push(inserted_model);
+        }
+
+        // Mark removed models as deprecated
+        for model_id in &model_ids_to_remove {
+            sqlx::query("UPDATE model SET deprecated = 1 WHERE id = ?")
+                .bind(model_id)
+                .execute(&mut *tx)
+                .await?;
+        }
+
+        // Update provider's last_models_update_timestamp
+        sqlx::query("UPDATE provider SET last_models_update_timestamp = ? WHERE id = ?")
+            .bind(timestamp)
+            .bind(provider_id)
+            .execute(&mut *tx)
+            .await?;
+
+        // Commit transaction
+        tx.commit().await?;
+
+        Ok((added_models, model_ids_to_remove.clone()))
     }
 }
