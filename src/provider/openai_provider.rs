@@ -123,7 +123,7 @@ pub struct OpenAIProvider {
 impl OpenAIProvider {
     pub fn new(provider: Provider) -> Self {
         let client = OpenAIClient::builder().with_endpoint(&provider.base_url);
-        let client = if !provider.api_key_env_var.is_empty() {
+        let client = if provider.api_key_env_var.is_empty() {
             // this indicates the provider doesn't require an api key
             // primarily use case for this is things like ollama
             client
