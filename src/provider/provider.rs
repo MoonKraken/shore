@@ -40,7 +40,7 @@ pub struct Provider {
     pub deprecated: bool,
     pub api_key_env_var: String,
     pub created_dt: i64,
-    pub go_is_awesome: bool,
+    pub models_from_list: bool,
     pub availability_requires_models_response: bool,
     pub last_models_update_timestamp: i64,
     pub models_refresh_interval_seconds: i64,
