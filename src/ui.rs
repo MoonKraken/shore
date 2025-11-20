@@ -17,22 +17,22 @@ fn calculate_textarea_height(textarea: &EditorState, available_width: u16) -> u1
     if available_width <= 2 {
         return 3; // minimum height with borders
     }
-    
+
     // Account for borders on left and right
     let inner_width = (available_width - 2) as usize;
-    
+
     if inner_width == 0 {
         return 3;
     }
-    
+
     let mut total_visual_lines = 0;
     let num_rows = textarea.lines.len();
-    
+
     // Iterate through each line (row) in the editor
     for row_idx in 0..num_rows {
         // Get the length of this line (number of characters in the row)
         let line_len = textarea.lines.len_col(row_idx).unwrap_or(0);
-        
+
         if line_len == 0 {
             // Empty line still takes 1 visual row
             total_visual_lines += 1;
@@ -42,12 +42,12 @@ fn calculate_textarea_height(textarea: &EditorState, available_width: u16) -> u1
             total_visual_lines += (line_len + inner_width - 1) / inner_width;
         }
     }
-    
+
     // If there are no lines at all, we need at least 1 line for the cursor
     if total_visual_lines == 0 {
         total_visual_lines = 1;
     }
-    
+
     // Add 2 for top and bottom borders, with a minimum of 3
     3.max(total_visual_lines + 2) as u16
 }
@@ -87,7 +87,7 @@ fn wrap_text(text: Text, max_width: usize) -> Text<'static> {
         for span in &line.spans {
             // Split into words and spaces, preserving the spaces
             let mut current_word = String::new();
-            
+
             for ch in span.content.chars() {
                 if ch.is_whitespace() {
                     // If we have a word accumulated, push it
@@ -101,7 +101,7 @@ fn wrap_text(text: Text, max_width: usize) -> Text<'static> {
                     current_word.push(ch);
                 }
             }
-            
+
             // Push any remaining word
             if !current_word.is_empty() {
                 segments.push((current_word, span.style, false));
@@ -120,7 +120,7 @@ fn wrap_text(text: Text, max_width: usize) -> Text<'static> {
 
         while i < segments.len() {
             let (content, style, is_space) = &segments[i];
-            
+
             if *is_space {
                 // Space handling: check if we should wrap before adding it
                 if current_width > 0 && current_width < max_width {
@@ -142,7 +142,7 @@ fn wrap_text(text: Text, max_width: usize) -> Text<'static> {
                 i += 1;
                 continue;
             }
-            
+
             // Non-space segment (word/text)
             let content_width = content.chars().count();
 
@@ -186,7 +186,7 @@ fn wrap_text(text: Text, max_width: usize) -> Text<'static> {
                 current_spans.push(Span::styled(content.clone(), *style));
             }
             current_width += content_width;
-            
+
             i += 1;
         }
 
@@ -389,50 +389,63 @@ fn build_model_carousel(app: &App, available_width: usize) -> Vec<Span<'static>>
 
     // Calculate width needed for padded indices
     let max_idx_width = total_models.to_string().len();
-    let total_chars_without_suffix = total_models * max_idx_width + (total_models.saturating_sub(1)); // +spaces between indices
-    
+    let total_chars_without_suffix =
+        total_models * max_idx_width + (total_models.saturating_sub(1)); // +spaces between indices
+
     // Determine window range
     let (start_idx, end_idx, suffix) = if total_chars_without_suffix <= available_width {
         // Show all indices
         (0, total_models, String::new())
     } else {
         // Calculate space needed for suffix (e.g., " / 10")
-        let suffix = if total_models > 9 { format!(" / {}", total_models) } else { String::new() };
-        
+        let suffix = if total_models > 9 {
+            format!(" / {}", total_models)
+        } else {
+            String::new()
+        };
+
         // Space per index with padding and separator
         let space_per_idx = max_idx_width + 1; // +1 for space separator
-        
+
         // Calculate how many indices can fit
         let available_for_indices = available_width.saturating_sub(suffix.len());
-        let max_indices = (available_for_indices / space_per_idx).max(1).min(total_models);
+        let max_indices = (available_for_indices / space_per_idx)
+            .max(1)
+            .min(total_models);
         // Calculate window with current index in the middle when possible
         let half_window = max_indices / 2;
         let mut start = current_idx.saturating_sub(half_window);
         let mut end = start + max_indices;
-        
+
         // Adjust if we're at the end
         if end > total_models {
             end = total_models;
             start = end.saturating_sub(max_indices);
         }
-        
+
         (start, end, suffix)
     };
-    
+
     let mut spans = Vec::new();
-    
+
     let chat_id = app.current_chat.id;
     // Build the carousel spans
     for idx in start_idx..end_idx {
         let display_idx = idx + 1;
-        let model_id = app.current_chat_profile.model_ids.get(idx).copied().unwrap_or(0);
-        
+        let model_id = app
+            .current_chat_profile
+            .model_ids
+            .get(idx)
+            .copied()
+            .unwrap_or(0);
+
         // Check if this model has pending inference by checking the JoinHandle
-        let has_pending = app.inference_handles_by_chat_and_model
+        let has_pending = app
+            .inference_handles_by_chat_and_model
             .get(&(chat_id, model_id))
             .map(|handle| !handle.is_finished())
             .unwrap_or(false);
-        
+
         // Style the index
         let mut style = Style::default();
         if has_pending {
@@ -441,7 +454,7 @@ fn build_model_carousel(app: &App, available_width: usize) -> Vec<Span<'static>>
         if idx == current_idx {
             style = style.fg(Color::Cyan).add_modifier(Modifier::BOLD);
         }
-        
+
         // Format index with padding to match the width of the largest index
         let padded_idx = format!("{:>width$}", display_idx, width = max_idx_width);
         spans.push(Span::styled(padded_idx, style));
@@ -449,9 +462,9 @@ fn build_model_carousel(app: &App, available_width: usize) -> Vec<Span<'static>>
             spans.push(Span::raw(" "));
         }
     }
-    
+
     spans.push(Span::raw(suffix));
-    
+
     spans
 }
 
@@ -464,13 +477,19 @@ fn render_chat_title(f: &mut Frame, app: &App, area: Rect) {
         .unwrap_or(&0);
     let model = app.all_models.get(model_id);
     let model_name: &str = model.map(|m| m.model.as_str()).unwrap_or("?");
-    
-    let title_text = if app.title_inference_in_progress_by_chat.contains(&app.current_chat.id) {
+
+    let title_text = if app
+        .title_inference_in_progress_by_chat
+        .contains(&app.current_chat.id)
+    {
         format!("    {}", app.get_spinner_char())
     } else {
-        app.current_chat.title.clone().unwrap_or("New Chat".to_string())
+        app.current_chat
+            .title
+            .clone()
+            .unwrap_or("New Chat".to_string())
     };
-    
+
     // Use fixed percentages to keep carousel always centered
     // Create a three-column layout: title | carousel | model name
     let title_layout = Layout::default()
@@ -508,7 +527,7 @@ fn render_chat_title(f: &mut Frame, app: &App, area: Rect) {
         .block(Block::default().borders(Borders::TOP | Borders::BOTTOM))
         .alignment(Alignment::Center);
     f.render_widget(carousel_paragraph, title_layout[1]);
-    
+
     // Render model name (right-aligned)
     let right_paragraph = Paragraph::new(model_name)
         .block(Block::default().borders(Borders::RIGHT | Borders::TOP | Borders::BOTTOM))
@@ -808,7 +827,9 @@ fn render_provider_dialog(f: &mut Frame, app: &App, area: Rect) {
         .cached_provider_data
         .iter()
         .map(|(name, env_var, is_set)| {
-            let status = if *is_set {
+            let status = if env_var.is_empty() {
+                Cell::from(Span::styled("N/A", Style::default().fg(Color::Gray)))
+            } else if *is_set {
                 Cell::from(Span::styled("Yes", Style::default().fg(Color::Green)))
             } else {
                 Cell::from(Span::styled("No", Style::default().fg(Color::Red)))
@@ -1004,12 +1025,12 @@ fn render_unavailable_models_error_dialog(f: &mut Frame, app: &App, area: Rect) 
         Line::from(""),
         Line::from(Span::styled(
             "⚠️  Cannot Continue Chat",
-            Style::default()
-                .fg(Color::Red)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
-        Line::from("The following models are not available because their provider API keys are not set:"),
+        Line::from(
+            "The following models are not available because their provider API keys are not set:",
+        ),
     ];
 
     let message_paragraph = Paragraph::new(error_message)
