@@ -166,6 +166,7 @@ impl ProviderClient for OpenAIProvider {
                     disabled: false,
                     deprecated: false,
                     created_dt: Utc::now().timestamp(),
+                    no_thinking_tokens_confirmed: false,
                 };
 
                 Some((model.model.clone(), model))

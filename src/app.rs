@@ -1641,8 +1641,8 @@ impl App {
                     &model.model,
                     "You are a helpful assistant.", // Default system prompt for now
                     &current_conversation,
-                    vec![], // No tools for now
-                    false,  // Don't remove think tokens
+                    vec![],                              // No tools for now
+                    !model.no_thinking_tokens_confirmed, // Remove think tokens if model hasn't been confirmed to not use them
                 )
                 .await
                 .map(|generation_result| {
@@ -1695,8 +1695,8 @@ impl App {
                             &model.model,
                             "You are a conversation title generator.", // Default system prompt for now
                             &current_conversation_clone,
-                            vec![], // No tools for now
-                            false,  // Don't remove think tokens
+                            vec![],                              // No tools for now
+                            !model.no_thinking_tokens_confirmed, // Remove think tokens if model hasn't been confirmed to not use them
                         )
                         .await
                         .map(|generation_result| {
@@ -1790,7 +1790,11 @@ impl App {
             ModelSelectionMode::CurrentChatModels => {
                 // we don't actually write these to the database
                 // until the first prompt happens
-                self.current_chat_profile.model_ids = selected_models;
+                // set selected_model_idx to 0 if any models have changed
+                if self.current_chat_profile.model_ids != selected_models {
+                    self.current_chat_profile.model_ids = selected_models;
+                    self.current_model_idx = 0;
+                }
             }
         }
 

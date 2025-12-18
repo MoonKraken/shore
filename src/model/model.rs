@@ -10,4 +10,5 @@ pub struct Model {
     pub disabled: bool,
     pub deprecated: bool,
     pub created_dt: i64,
+    pub no_thinking_tokens_confirmed: bool,
 }

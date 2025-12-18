@@ -589,20 +589,41 @@ fn render_chat_content(f: &mut Frame, app: &mut App, area: Rect) {
         let message = &messages[msg_idx];
 
         // Determine message styling and content
-        let (color, content, alignment) = if let Some(error) = message.error.as_deref() {
-            (Color::Red, error, Alignment::Left)
+        let (color, content, alignment, thinking_lines_count) = if let Some(error) =
+            message.error.as_deref()
+        {
+            (Color::Red, error, Alignment::Left, None)
         } else {
             if message.chat_role == ChatRole::User {
                 (
                     Color::Green,
                     message.content.as_deref().unwrap_or("[No content]"),
                     Alignment::Right,
+                    None,
                 )
             } else {
+                // Check if we need to process thinking tokens for assistant messages
+                let mut raw_content = message.content.as_deref().unwrap_or("[No content]");
+                let mut thinking_lines_count: Option<usize> = None;
+
+                // Only process thinking tokens if the model hasn't been confirmed to not use them
+                if let Some(model) = app.available_models.get(&model_id) {
+                    if !model.no_thinking_tokens_confirmed && raw_content.starts_with("<thinking>")
+                    {
+                        if let Some((thinking_part, after_think)) =
+                            raw_content.split_once("</thinking>")
+                        {
+                            raw_content = after_think.trim();
+                            thinking_lines_count = Some(thinking_part.lines().count());
+                        }
+                    }
+                }
+
                 (
                     Color::default(),
-                    message.content.as_deref().unwrap_or("[No content]"),
+                    raw_content,
                     Alignment::Left,
+                    thinking_lines_count,
                 )
             }
         };
@@ -615,6 +636,16 @@ fn render_chat_content(f: &mut Frame, app: &mut App, area: Rect) {
         }
 
         let mut wrapped_text = wrap_text(text, (area.width as usize).saturating_sub(4));
+
+        // Add thinking tokens placeholder if needed
+        if thinking_lines_count.is_some() {
+            if let Some(thinking_lines) = thinking_lines_count {
+                let placeholder = Line::from(format!("{}x Thinking tokens", thinking_lines))
+                    .alignment(Alignment::Center);
+                wrapped_text.lines.insert(0, placeholder);
+            }
+        }
+
         wrapped_text.lines.push(Line::from(""));
 
         for line in &mut wrapped_text.lines {
@@ -667,7 +698,22 @@ fn render_chat_content(f: &mut Frame, app: &mut App, area: Rect) {
 
             // Add this chunk to visible items
             let chunk_text = Text::from(chunk_lines);
-            let list_item = ListItem::new(chunk_text).style(Style::default().fg(color));
+            // Use a slightly lighter color for the thinking tokens placeholder
+            let item_color = if msg_idx == current_msg_idx
+                && chunk_idx == start_chunk
+                && start_line == 0
+                && !wrapped_text.lines.is_empty()
+                && message.chat_role != ChatRole::User
+                && wrapped_text.lines[0]
+                    .spans
+                    .iter()
+                    .any(|s| s.content.contains("Thinking tokens"))
+            {
+                Color::Rgb(150, 150, 150) // Lighter gray for thinking tokens placeholder
+            } else {
+                color
+            };
+            let list_item = ListItem::new(chunk_text).style(Style::default().fg(item_color));
             visible_items.push(list_item);
 
             if let Some(selection_idx) = current_item_selection
